@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Star Conquest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="description" content="Turn-based space 4X strategy — explore, expand, exploit, exterminate.">
+<meta name="theme-color" content="#070a1a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Star Conquest">
+<meta name="screen-orientation" content="portrait">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="rotate-overlay" aria-hidden="true">
+  <div class="rotate-icon">📱</div>
+  <p>Star Conquest is a portrait-only game.<br>Please rotate your device back.</p>
+</div>
+
+<div id="app">
+
+  <!-- START SCREEN -->
+  <section id="screen-start" class="screen active">
+    <div class="start-scroll">
+      <div class="title-block">
+        <div class="title-badge">✦</div>
+        <h1>STAR<span>CONQUEST</span></h1>
+        <p class="tagline">Explore. Expand. Exploit. Exterminate.</p>
+      </div>
+
+      <form id="setup-form">
+        <fieldset>
+          <legend>Universe Size</legend>
+          <div class="chip-row" data-field="universeSize">
+            <button type="button" class="chip" data-value="tiny">Tiny<small>12</small></button>
+            <button type="button" class="chip" data-value="small">Small<small>24</small></button>
+            <button type="button" class="chip active" data-value="medium">Medium<small>40</small></button>
+            <button type="button" class="chip" data-value="large">Large<small>60</small></button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Rival Empires <span id="rivalCountLabel">3</span></legend>
+          <input type="range" id="rivalCount" min="1" max="8" value="3" step="1">
+        </fieldset>
+
+        <fieldset>
+          <legend>AI Difficulty</legend>
+          <div class="chip-row" data-field="difficulty">
+            <button type="button" class="chip" data-value="easy">Easy</button>
+            <button type="button" class="chip active" data-value="medium">Medium</button>
+            <button type="button" class="chip" data-value="hard">Hard</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Commander Color</legend>
+          <div class="chip-row swatch-row" data-field="playerColor">
+            <button type="button" class="swatch active" data-value="#3ad6b0" style="--c:#3ad6b0"></button>
+            <button type="button" class="swatch" data-value="#5b8cff" style="--c:#5b8cff"></button>
+            <button type="button" class="swatch" data-value="#ff8a3d" style="--c:#ff8a3d"></button>
+            <button type="button" class="swatch" data-value="#e05bd0" style="--c:#e05bd0"></button>
+            <button type="button" class="swatch" data-value="#f2d94e" style="--c:#f2d94e"></button>
+          </div>
+        </fieldset>
+
+        <button type="submit" class="btn-primary" id="launchBtn">Launch Campaign</button>
+        <button type="button" class="btn-secondary" id="continueBtn" hidden>Continue Saved Game</button>
+      </form>
+
+      <p class="credits-note">A design-accurate homage to <em>Strategic Commander</em> (ZindaWare, Palm OS, 2001–2003). Original assets don't survive publicly — all art here is procedurally generated.</p>
+    </div>
+  </section>
+
+  <!-- GAME SCREEN -->
+  <section id="screen-game" class="screen">
+    <header id="hud">
+      <div class="hud-row">
+        <div class="hud-stat">
+          <span class="hud-label">Credits</span>
+          <span class="hud-value" id="statCredits">0</span>
+        </div>
+        <div class="hud-stat">
+          <span class="hud-label">Tech</span>
+          <span class="hud-value" id="statTech">0</span>
+        </div>
+        <div class="hud-stat">
+          <span class="hud-label">Planets</span>
+          <span class="hud-value" id="statPlanets">0</span>
+        </div>
+        <div class="hud-stat">
+          <span class="hud-label">Turn</span>
+          <span class="hud-value" id="statTurn">1</span>
+        </div>
+        <button id="menuBtn" class="icon-btn" aria-label="Menu">☰</button>
+      </div>
+    </header>
+
+    <div id="map-wrap">
+      <canvas id="mapCanvas"></canvas>
+      <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <footer id="bottom-bar">
+      <button id="logBtn" class="icon-btn">📜</button>
+      <button id="endTurnBtn" class="btn-primary btn-end-turn">End Turn ▶</button>
+    </footer>
+  </section>
+
+  <!-- PLANET PANEL -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="planet-panel" class="sheet hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-body" id="planetPanelBody"></div>
+  </div>
+
+  <!-- SEND FLEET MODAL -->
+  <div id="fleet-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="fleetModalTitle">Send Fleet</h2>
+      <div id="fleetShipList"></div>
+      <div class="fleet-meta">
+        <span id="fleetEta"></span>
+        <span id="fleetPower"></span>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="fleetCancelBtn">Cancel</button>
+        <button class="btn-primary" id="fleetSendBtn">Launch</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOG PANEL -->
+  <div id="log-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Fleet &amp; Battle Log</h2>
+      <div id="logList" class="log-list"></div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="logCloseBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MENU MODAL -->
+  <div id="menu-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Menu</h2>
+      <button class="btn-secondary" id="resumeBtn">Resume</button>
+      <button class="btn-secondary" id="restartBtn">Abandon &amp; Restart</button>
+      <button class="btn-secondary" id="installBtn" hidden>Install App</button>
+    </div>
+  </div>
+
+  <!-- END GAME MODAL -->
+  <div id="end-modal" class="modal-backdrop hidden">
+    <div class="modal end-modal">
+      <h2 id="endTitle">Victory!</h2>
+      <p id="endBody"></p>
+      <button class="btn-primary" id="endRestartBtn">New Campaign</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/map.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/render.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

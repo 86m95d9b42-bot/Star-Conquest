@@ -1,0 +1,16 @@
+{
+  "name": "Star Conquest",
+  "short_name": "StarConquest",
+  "description": "Turn-based 4X space strategy — explore, expand, exploit, exterminate. Capture every rival home planet to win.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#070a1a",
+  "theme_color": "#070a1a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,41 @@
+Here's what I could dig up on Strategic Commander by ZindaWare (Palm OS, ~2001–2003, versions up to 1.2). It's mostly abandonware with no surviving official manual online, but between store descriptions, the developer's own feature list, and a contemporary player review, the core rules are fairly clear. I also found that someone already built an open-source spiritual clone (Fleet Commander, Kotlin/AngularJS) explicitly inspired by it — confirms the genre reading.
+Confirmed facts about the original game
+Genre / comparisons the publisher itself used: turn-based 4X-lite strategy, explicitly compared by ZindaWare to Master of Orion, Risk, and Civilization — i.e. "explore, expand, exploit, exterminate" in miniature.
+Setup
+Set in space; the map is a starfield of planets.
+4 universe (map) sizes to choose from.
+Up to 9 players total, any mix of human and AI (up to 8 opponents).
+3 AI difficulty levels.
+Each game generates a different random universe layout.
+Each player starts on their own random home planet.
+Supports B&W, color, and hi-res color Palm screens; later versions (1.2) added infrared "beaming" so multiple physical Palm devices could pass turns to each other, plus multi-game save slots.
+Core loop (turn-based)
+On planets you control, you build manufacturing facilities and research facilities (a planet has limited building slots, and different planet "classes" support more or fewer facilities).
+Each turn you allocate what your facilities do — the reviewer describes it as choosing a mix of: produce gold/resources, research tech, or build ships. It's an investment trade-off: rush research for a small elite high-tech fleet, or rush production for a massive low-tech fleet, or balance both.
+Gold/resources + tech level let you construct ships and send them out.
+You move fleets between planets by tap-and-drag on the map (this wasn't explained in-game — a common complaint).
+Ships explore neutral planets and can colonize/conquer them, expanding your building capacity and resource base.
+When a fleet arrives at an enemy-held planet, an automatic battle resolves — no direct player control during combat. It's shown as a numeric fleet-strength comparison plus a simple animation (torpedoes flying, ships disappearing). Outcome is driven by fleet size and tech level of ships — a huge low-tech fleet can still lose to a handful of high-tech ships.
+Win condition: capture every other player's/AI's home planet. Do that to all opponents and you win. (Losing your own home planet presumably eliminates or badly cripples you, though this isn't explicitly documented.)
+What's notably NOT documented anywhere I could find (soft32/Tucows/PalmDB/GameFAQs/archive.org all lack a rules manual, and the Wayback Machine copy of the original zindaware.com site is blocked from fetching):
+Exact resource types/units (is it just "gold," or gold + separate research points?)
+Specific ship types/classes and their stats
+Specific building types, costs, and build times
+The exact tech tree / research levels
+Exact combat formula (how fleet size and tech translate into win probability/losses)
+Planet "classes" and how many facility slots each supports
+Whether facilities produce passively each turn or need to be manually "activated"
+Since none of that survives publicly, a faithful byte-for-byte clone isn't really possible — but a design-accurate clone of the systems and feel absolutely is, and that's normal for this kind of retro-clone project (this is exactly what the Fleet Commander dev did too).
+Suggested rule set for your clone (fills the documented gaps with clean, tunable numbers)
+If you want, I can write this up as a fuller game design doc and then start building the actual JavaScript/HTML/CSS implementation (canvas or SVG map, drag-to-send-fleet interaction, turn-based state machine, simple AI). A reasonable, faithful-in-spirit rule set:
+Map: N planets scattered on a 2D starfield, size scales with your 4 "universe size" presets (e.g. Tiny/Small/Medium/Large → 12/24/40/60 planets).
+Planets: each has a class (I–V) determining max facility slots (e.g. 2/4/6/8/10) and a neutral defense garrison if unowned.
+Facilities: two types — Factory (converts turns into ship-building capacity/resources) and Lab (converts turns into tech-level progress). Each facility built adds to your per-turn output.
+Resources: a single currency ("Credits") produced by factories, spent to build more facilities or ships.
+Tech level: raised by labs; higher tech unlocks stronger ship classes and gives a combat multiplier.
+Ships: 3–4 tiers (Scout → Fighter → Cruiser → Dreadnought), each costing more credits + minimum tech level, with a base attack/defense stat.
+Movement: drag from a friendly planet to a destination; fleet takes N turns based on distance/speed stat.
+Combat: auto-resolve on arrival — total (ship count × ship power × tech multiplier) attacker vs. defender, with some randomness; loser fleet destroyed, if attacker wins and target was a planet, ownership flips.
+Turn structure: simultaneous turns (all players queue orders, then resolve) is more faithful to "turn-based, not real-time" and works well for a mobile/web clone with AI opponents.
+Win condition: capture all rivals' home planets.
+Want me to turn this into a full design doc (exact numbers/tables) and then start scaffolding the actual JS/HTML/CSS game — map rendering, planet/fleet data model, drag-to-move UI, and a basic AI opponent?
