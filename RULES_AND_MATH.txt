@@ -1,0 +1,534 @@
+STAR CONQUEST — RULES & MATH REFERENCE
+========================================
+Generated from the actual source in js/map.js, js/engine.js, js/ai.js
+and js/render.js. Every number below is the live constant used by the
+game, not an approximation — if you change a value in the code, this
+file will drift, so re-derive it from source if you ever tune the
+balance.
+
+
+1. OVERVIEW
+------------
+Star Conquest is a turn-based 4X-lite space strategy game: explore,
+expand, exploit, exterminate. You command one empire against 1–8 AI
+rivals. Capture every rival's home planet to win; lose your own home
+planet and you're eliminated.
+
+This is an original ruleset that fills in the mechanics the source
+research (Strategic Commander, ZindaWare, Palm OS, 2001–2003) never
+documented publicly — exact costs, the tech tree, and the combat
+formula don't survive anywhere, so the numbers here are a clean,
+tunable design built to feel right rather than a reconstruction of
+lost originals.
+
+
+2. GALAXY SETUP
+-----------------
+Universe sizes (js/engine.js, UNIVERSE_SIZES) set the planet count:
+
+    Tiny    12 planets
+    Small   24 planets
+    Medium  40 planets
+    Large   60 planets
+
+Planet classes (PLANET_CLASSES) determine how many Factory/Lab slots
+a planet has. Each newly generated planet rolls a class using a
+weighted random pick (js/map.js, pickWeighted):
+
+    Class   Slots   Weight   Chance
+    I         2       34      34%
+    II        4       27      27%
+    III       6       20      20%
+    IV        8       13      13%
+    V        10        6       6%
+
+pickWeighted works like a raffle: it sums all weights (=100), draws a
+random number in [0, 100), then walks the class list subtracting each
+weight until the running total goes negative — the class it lands on
+is the winner. Higher classes are rarer and support more buildings.
+
+Every planet also gets a neutral defense garrison strength, rolled at
+generation time:
+
+    neutralDefense = round(classId * 6 + random() * classId * 5)
+
+So a Class I neutral world defends with roughly 6–11 strength, while
+a Class V neutral world defends with roughly 30–55. This is a flat
+number, not real ships — see section 6 for how it's used in combat.
+
+Home planets: the map generator picks one starting planet per player
+using farthest-point sampling (js/map.js) restricted to Class III+
+worlds when there are enough of them (otherwise it falls back to the
+full planet list). The algorithm:
+
+  1. Pick one random Class III+ planet as the first home.
+  2. Repeatedly pick whichever remaining candidate has the largest
+     minimum distance to every home already chosen (a greedy
+     maximin — this is the standard "farthest point" spread
+     heuristic, not true optimal packing, but it's fast and gives
+     visually well-separated starts).
+  3. Every chosen home planet is then force-upgraded to Class V
+     (10 slots) regardless of what it originally rolled, so no
+     player starts cramped.
+
+Each home planet starts with: 2 Factories, 1 Lab, a garrison of 3
+Scouts + 2 Fighters, and its owner begins with 150 credits, 0 tech
+points (Tech Level 0).
+
+
+3. WORLD SIZE & LAYOUT MATH
+------------------------------
+The playable world (the coordinate space planets live in, separate
+from screen pixels) is sized so the generated galaxy fills the actual
+device viewport edge-to-edge rather than floating in a letterboxed
+strip, AND so that world AREA scales in direct proportion to planet
+count — a universe with 5x the planets gets exactly 5x the area, so
+planet density/spacing stays the same no matter which size you pick;
+"bigger universe" means literally more space, not a more crowded
+version of the same space:
+
+    worldW = round(WORLD_REFERENCE_WIDTH * sqrt(planetCount / WORLD_REFERENCE_PLANET_COUNT))
+    worldH = round(worldW / aspect)
+    margin = max(46, min(worldW, worldH) * 0.07)
+
+    WORLD_REFERENCE_PLANET_COUNT = 12  (Tiny's planet count — the anchor)
+    WORLD_REFERENCE_WIDTH = 832        (Tiny's worldW at aspect 0.462)
+
+Since area = worldW * worldH = worldW^2 / aspect, and worldW is
+proportional to sqrt(planetCount), area itself ends up exactly
+proportional to planetCount — that square root is what converts "5x
+the count" into "5x the area" rather than "5x the width" (which would
+have overshot to 25x the area).
+
+`aspect` is measured live from the on-screen map viewport
+(width / height) right before a new game starts, so worldH stretches
+or compresses to match your device's actual portrait aspect ratio.
+`margin` keeps planets off the very edge of the world.
+
+Planet placement uses rejection sampling: pick a random point inside
+the margin, and only accept it if it's at least `minDist` away from
+every already-placed planet, retrying up to planetCount * 400 times
+before giving up (in practice it always succeeds well before that).
+
+    minDist = max(64, sqrt(worldW * worldH / planetCount) * 0.58)
+
+sqrt(area / planetCount) is the average area each planet would get if
+they were tiled evenly across the world; multiplying by 0.58 relaxes
+that into a minimum spacing that still allows some visual clustering
+instead of a rigid grid. Because area/planetCount is now held constant
+across every universe size (see above), minDist comes out effectively
+identical everywhere too. At a typical phone aspect ratio (~0.462,
+e.g. 390x844):
+
+    Universe  Planets  worldW  worldH   Area ratio vs Tiny   minDist
+    Tiny        12       832    1801          1.00x            ~205
+    Small       24      1177    2547          2.00x            ~205
+    Medium      40      1519    3287          3.33x            ~205
+    Large       60      1860    4025          5.00x            ~205
+
+Going Tiny -> Large, planet count grows 5x and world area grows 5x
+right along with it (matching each other tier for tier: 1x/2x/3.33x/
+5x, exactly the same ratios as the planet counts 12/24/40/60 relative
+to Tiny) — so minimum planet spacing stays essentially flat (~205)
+across all four sizes. Choosing a bigger universe now means a bigger
+galaxy at the same density, not a more cramped one.
+
+
+4. ECONOMY: FACILITIES
+-------------------------
+Every planet has a fixed number of building slots (from its class).
+A slot holds either a Factory or a Lab, chosen by the player (or AI).
+
+    Factory: +6 credits/turn each  (FACTORY_OUTPUT)
+    Lab:     +4 tech points/turn each  (LAB_OUTPUT)
+
+Production is passive: totals are added to the owner's pool once per
+End Turn (productionTick in engine.js), not per-planet — credits and
+tech points are shared empire-wide, not local to the planet that
+produced them.
+
+Facility costs grow the more of that type you already have on the
+SAME planet, so early slots are cheap and later ones are a real
+investment:
+
+    cost = ceil(base * growth ^ existingCountOnThatPlanet)
+
+    Factory: base=50,  growth=1.45
+    Lab:     base=60,  growth=1.45
+
+Concretely, building Factories one after another on the same planet
+costs (rounding up): 50, 73, 106, 153, 222, 322, ... — each one is
+about 45% more expensive than the last. Labs follow the identical
+curve starting from 60. Building on a *different* planet resets the
+count back to that planet's own facility total, so spreading
+Factories/Labs across more planets is cheaper in aggregate than
+stacking them all on one world.
+
+
+5. TECH TREE
+--------------
+Tech points (from Labs) accumulate into a Tech Level via a fixed
+cumulative-threshold table (TECH_THRESHOLDS):
+
+    Level 0:     0 pts
+    Level 1:    24 pts
+    Level 2:    60 pts
+    Level 3:   110 pts
+    Level 4:   180 pts
+    Level 5:   270 pts
+    Level 6:   390 pts
+    Level 7:   540 pts
+    Level 8:   730 pts
+    Level 9:   970 pts
+    Level 10: 1260 pts
+
+techLevelFromPoints walks the table and returns the highest level
+whose threshold your accumulated points meet or exceed — thresholds
+are strictly increasing, so this is just "how many rungs have you
+climbed." Each level costs progressively more (the gap between
+thresholds grows from 24 up to 290+), a standard soft-diminishing-
+returns curve.
+
+Tech Level does two things:
+  - Gates which ship types you're allowed to build (see section 6).
+  - Multiplies combat power by +12% per level (TECH_COMBAT_BONUS =
+    0.12), applied separately to attacker and defender based on
+    each side's own tech level. A Tech Level 5 fleet fights at
+    1 + 0.12*5 = 1.6x its raw stat total.
+
+
+6. SHIPS
+----------
+Four tiers, each gated by minimum Tech Level and requiring at least
+one Factory on the launching planet:
+
+    Ship         Cost   MinTech   ATK   DEF   Speed
+    Scout          30      0       1     1     2.4
+    Fighter        60      1       3     2     1.8
+    Cruiser       150      3       7     6     1.3
+    Dreadnought   400      6      18    15     0.9
+
+Speed is inverted from what you'd expect intuitively — higher Speed
+means the ship takes fewer turns to cross a given distance (see
+section 7). Note Scouts and Fighters are individually weak but fast
+and cheap; Dreadnoughts hit far harder per-hull but travel slowly and
+gate on Tech Level 6, so early wars are fought with small, fast
+fleets and late wars with lumbering heavy ones.
+
+
+7. MOVEMENT & ETA
+--------------------
+Fleets can mix ship types; a mixed fleet always travels at its
+SLOWEST member's speed (fleetMinSpeed picks the minimum Speed stat
+among ship types with count > 0 — if none, defaults to 1.5, though
+that branch is unreachable in practice since you can't send an empty
+fleet).
+
+    travelTurns = max(1, round(distance / (95 * fleetSpeed)))
+
+95 is MOVE_UNIT_DISTANCE, a flat conversion between world-space
+distance units and "distance covered per turn at Speed 1." A fleet of
+pure Scouts (speed 2.4) covers 95*2.4 = 228 world units per turn; a
+pure Dreadnought fleet (speed 0.9) covers 85.5 units per turn. ETA is
+always at least 1 turn even for adjacent planets.
+
+distance itself is plain Euclidean distance in world-space:
+
+    distance(a, b) = sqrt((a.x-b.x)^2 + (a.y-b.y)^2)
+
+
+8. COMBAT
+-----------
+Combat auto-resolves the instant a fleet's arrivalTurn is reached —
+there's no player control during the fight itself (matching the
+original game's design, per the source research). It only triggers
+if the destination planet is not already owned by the fleet's owner;
+arriving at your own planet just reinforces its garrison instead
+(counts are added directly, no combat roll).
+
+Attack power:
+
+    attackPower = sum(shipCount_i * ATK_i)
+                  * (1 + 0.12 * attackerTechLevel)
+                  * randomFactor
+
+Defense power against an OWNED planet:
+
+    defendPower = (sum(garrisonCount_i * DEF_i) + 2.2 * planetClassId)
+                  * (1 + 0.12 * defenderTechLevel)
+                  * randomFactor
+
+Defense power against a NEUTRAL planet:
+
+    defendPower = planet.neutralDefense * randomFactor
+
+`randomFactor` is drawn independently for attacker and defender as
+0.85 + random()*0.3 — i.e. uniformly between 0.85x and 1.15x, a ±15%
+swing that lets a somewhat weaker force occasionally win and a
+somewhat stronger one occasionally stumble, without ever letting luck
+overturn a truly lopsided fight.
+
+`2.2 * planetClassId` (CLASS_DEFENSE_BONUS) is a flat home-turf bonus
+for owned planets scaled by their class — a Class V home world gets
++11 defense "for free" on top of its garrison, on the same additive
+scale as ship DEF stats.
+
+Whoever has the higher power wins outright — there's no partial
+success. Losses are then proportional to how close the fight was:
+
+    lossFraction = clamp(loserPower / winnerPower, 0, 0.9)
+
+The LOSER is always wiped out (fleet destroyed if attacking,
+garrison/neutralDefense zeroed if defending and losing). The WINNER
+survives but takes casualties: each of the winner's ship-type counts
+is reduced by round(count * lossFraction). So a decisive win (loser
+power close to 0) costs the winner almost nothing; a near-even fight
+(loser power close to winner power) costs the winner up to 90% of
+their force — deliberately capped below 100% so a winning fleet can
+never be entirely erased by its own victory.
+
+If the attacker wins:
+  - Ownership of the planet flips to the attacker.
+  - The attacker's surviving ships become the planet's new garrison.
+  - Any existing Factories/Labs on the planet are left intact
+    (conquest doesn't destroy infrastructure, only defenders).
+  - If the captured planet was the defender's HOME planet, that
+    player is immediately marked eliminated (alive = false). Their
+    other planets remain under their color/ownership but stop
+    producing (see productionTick's alive check) and remain
+    conquerable by anyone — there's no separate "neutral collapse"
+    step.
+
+If the defender wins:
+  - An owned planet's garrison takes the proportional loss above.
+  - A neutral planet's neutralDefense is reduced by the same
+    fraction (so repeated failed attacks gradually wear a neutral
+    world down even without ever taking it).
+
+
+9. TURN SEQUENCE
+-------------------
+Pressing End Turn (SC.Engine.endTurn) runs, in this exact order:
+
+  1. Every living AI player takes its full turn (SC.AI.takeTurn —
+     see section 10) using the CURRENT turn number. Any fleets they
+     launch get the same departTurn as anything the human already
+     queued this turn, so human and AI orders given "this turn" are
+     effectively simultaneous.
+  2. state.turn increments by 1.
+  3. Production ticks: every owned planet's Factories/Labs pay out
+     credits/tech points to their owner (dead players are skipped),
+     then every player's Tech Level is recalculated from their new
+     tech point total.
+  4. Every in-transit fleet whose arrivalTurn is now <= the new turn
+     number resolves (reinforcement or combat, per section 8) and is
+     removed from the in-transit list.
+  5. Game-over check runs (section 11).
+
+A fleet's ETA is measured in full End Turn presses: a fleet with
+ETA 1 launched before you press End Turn will resolve on that very
+End Turn (turn increments to N+1, and arrivalTurn = N+1 is now
+<= the new turn), i.e. "1 turn" always means "arrives after your
+next End Turn," never instantly and never delayed an extra cycle.
+
+
+10. AI BEHAVIOR
+------------------
+Each AI acts once per End Turn, gated by a difficulty profile
+(AI_DIFFICULTY in js/ai.js):
+
+    Difficulty   FacilityFrac  ShipFrac  LabWeight  ReserveFrac  MarginNeeded  AttackChance
+    Easy            0.35         0.25      0.30        0.55         1.45          45%
+    Medium          0.50         0.40      0.42        0.35         1.20          72%
+    Hard            0.58         0.48      0.48        0.22         1.05          92%
+
+Step 1 — Facilities: the AI allocates (credits * FacilityFrac) as a
+budget. Each iteration it scans every owned planet with a free slot,
+randomly leans toward Lab or Factory per-planet using LabWeight as a
+coin-flip probability, and greedily builds whatever's cheapest and
+affordable, repeating until the budget or free slots run out (capped
+at 60 iterations as a safety valve).
+
+Step 2 — Ships: same budget pattern using (credits * ShipFrac), but
+instead of cheapest-first it prefers the STRONGEST ship type it can
+currently afford and is tech-unlocked for, at any planet with a
+Factory, one ship at a time.
+
+Step 3 — Offense: rolls once against AttackChance; if it fails, the
+AI does nothing offensive this turn. Otherwise, for every owned
+planet with any stationed attack power, it holds back a ReserveFrac
+fraction of each ship type (rounded up, so defense is never left at
+literally zero) and offers the rest as an attack force. It then scores
+every non-owned planet in the galaxy as a potential target:
+
+  - Skipped entirely if the attack force's power is less than
+    (target's estimated defense power * MarginNeeded) — this is the
+    AI's safety margin; Hard AI will attack at near-parity (1.05x),
+    Easy AI wants a 45% power cushion before it commits.
+  - Otherwise scored as:
+        score = (40 if target is enemy-owned else 0)
+                 - distance * 0.05
+                 - defensePower * 0.3
+    i.e. the AI prefers capturing enemy planets over neutral ones,
+    prefers closer targets, and prefers weaker targets, in that
+    rough order of weight (the flat +40 for "is an enemy planet" is
+    usually decisive, then it's a tug-of-war between distance and
+    defense).
+
+The single best-scoring target (if any clears the margin check) gets
+the attack fleet; otherwise that planet's ships stay home.
+
+
+11. WIN & LOSS
+-----------------
+Checked every End Turn, after combat resolves:
+
+  - If the human player's alive flag is false (their home planet was
+    captured), status becomes "lost".
+  - Else if no AI player has alive === true (every rival's home
+    planet has fallen — including rivals eliminated by OTHER rivals,
+    not just by the human), status becomes "won".
+
+Both are terminal: SC.Engine.endTurn short-circuits immediately on
+any status other than "active", so the game state is frozen once
+either condition fires.
+
+
+12. FOG OF WAR (js/engine.js: refreshVision, planetView)
+----------------------------------------------------------
+Only the human player's map/UI is fog-restricted. AI opponents read
+state.planets directly in js/ai.js and are always omniscient — this
+section governs what YOU see, not what the AI knows or how combat
+resolves (combat always uses true ground-truth state regardless of
+anyone's fog).
+
+Vision sources, recomputed at game start and at the end of every End
+Turn (SC.Engine.refreshVision):
+
+  - Every planet you own projects vision in a radius:
+        visionRadius = 90 + planetClassId * 22
+    (Class I = 112, ... Class V / any home planet = 200)
+  - Every fleet you currently have in transit projects vision too,
+    from its live interpolated position (fleetPosition — the same
+    lerp along its route used to animate it):
+        visionRadius = 65, +40 more if the fleet contains any Scouts
+    So a pure-Scout fleet sees out to 105 while travelling; anything
+    else sees only 65. This is the whole reason to build Scouts —
+    they're otherwise the weakest combat unit in the game.
+
+Any planet whose distance to a vision source is <= that source's
+radius is "currently visible" this turn. For every planet, the human
+ends up in exactly one of three states (SC.Engine.planetView):
+
+  - UNKNOWN: never been in vision. The map shows a generic dim
+    silhouette (flat fill, no gradient, thin dashed outline, fixed
+    Class 2-sized radius so silhouette size can't leak true class) —
+    no owner, no class, no garrison, nothing. The planet panel just
+    says "Unexplored" and prompts you to send something there.
+  - STALE: was in vision at some past turn, isn't right now. The map
+    and panel show a last-known SNAPSHOT captured the moment vision
+    was lost (owner, class, garrison/defense, facility counts) tagged
+    with the turn it was seen, rendered at reduced opacity. The real
+    planet may have changed since — you're looking at old intel.
+  - VISIBLE: in vision right now. Full live data, same as the game
+    looked before fog of war existed.
+
+A planet you own is always VISIBLE to you (owning it puts it inside
+its own vision radius trivially), so your own territory is never
+fogged or stale — only neutral and rival worlds are.
+
+Rival fleet movement itself is also hidden by fog: js/render.js only
+ever draws fleets belonging to the human player. You can infer a
+rival is up to something from the battle log or from a planet's
+garrison changing between two visits, but you never see their ships
+mid-flight.
+
+Known simplification: the shared event log (Fleet & Battle Log) is
+NOT fog-restricted — a battle between two rivals on a planet you've
+never scouted will still appear there. Treat it as empire-wide
+intelligence-report flavor text rather than something your Scouts
+specifically witnessed; restricting it per-event was judged not worth
+the added bookkeeping for what it'd change strategically.
+
+Worth noting: since world area now scales with planet count (section
+3), minDist is ~205 on every universe size, not just Tiny — and your
+home planet's vision radius is 200. That means EVERY universe size
+starts you seeing effectively nothing beyond your own home world; the
+first real intel always comes from actively scouting, regardless of
+which size you picked. Universe size now changes how much galaxy
+there is to explore, not how much of it you start able to see.
+
+
+13. RENDERING / CAMERA MATH (js/render.js)
+----------------------------------------------
+Not a game rule, but the geometry that makes the above visible — and
+the part that took three iterations to get right, so the history is
+worth keeping alongside the final formula.
+
+fitScale (the DEFAULT view's zoom level) is deliberately NOT computed
+from the actual, possibly-much-bigger current world. It's pinned to
+whatever the smallest (Tiny) universe would need to fit on screen:
+
+    refWorldW = WORLD_REFERENCE_WIDTH                    (Tiny's worldW, 832)
+    refWorldH = refWorldW * (state.worldH / state.worldW) (same aspect as the real world)
+    fitScale  = min(canvasWidth / refWorldW, canvasHeight / refWorldH) * 0.985
+
+Since this reference rectangle never changes size regardless of which
+universe size you picked, fitScale itself comes out identical on every
+universe size — which is what finally made planet spacing and dot size
+look the same on Large as on Tiny. A Large universe is a bigger galaxy
+viewed at the SAME zoom as a Tiny one, not the same galaxy shrunk
+further to squeeze it all in — so you pan/zoom around a Large galaxy
+rather than seeing the whole thing by default.
+
+Two earlier iterations didn't fully fix this and are worth noting so
+the reasoning isn't re-derived from scratch later:
+  1. First pass equalized world-space planet SPACING across sizes
+     (section 3) but left fitScale computed from the actual (bigger)
+     world — so Large still got zoomed out further to fit it all on
+     screen, and equal world-space spacing still looked tighter in
+     screen pixels once rendered.
+  2. Second pass made planet RADIUS scale with true camera.scale
+     instead of a fixed screen-pixel size, fixing the radius-to-
+     spacing RATIO (so planets stopped looking oversized relative to
+     their gaps) — but the on-screen GAP itself was still smaller on
+     Large, because fitScale was still shrinking for bigger worlds.
+     Same-ratio-but-both-smaller still reads as "closer together."
+  3. This final pass decouples fitScale from the actual world size
+     entirely (formula above), which is what actually fixes the
+     on-screen gap, not just the ratio.
+
+Because a Large galaxy no longer fits on screen by default, the
+camera also centers on the human player's HOME PLANET at game start
+(state.players home planet's x/y) rather than the galaxy's geometric
+center — otherwise a big universe could open on empty, unscouted
+space.
+
+You can still zoom all the way out to see a big galaxy in full if you
+want to: minZoomScale is a SEPARATE floor computed from the actual
+current world (the old fitScale formula, repurposed):
+
+    minZoomScale = min(fitScale, min(canvasWidth/worldW, canvasHeight/worldH) * 0.985)
+
+For Tiny this is essentially equal to fitScale (no extra zoom-out
+available, there's nothing more to reveal). For Large it's
+substantially smaller, so pinching/scrolling out lets you shrink all
+the way down to a full-galaxy overview when you want one — you just
+don't start there.
+
+Pinch/wheel zoom is clamped to [minZoomScale, fitScale * 3.2] — zoom
+in up to 3.2x the (now universe-size-independent) default, or out as
+far as minZoomScale allows.
+
+A planet's on-screen radius is (18 + classId*7) WORLD units times the
+true camera.scale, floored at 4px so it never quite vanishes at
+extreme zoom-out. Defining it in world units and scaling by the real
+zoom (rather than a fixed screen-pixel size) is what keeps radius and
+spacing shrinking together as you zoom out on any universe size,
+including when you deliberately zoom out past the default to see a
+whole Large galaxy per the paragraph above.
+
+Tap-target radius (planetHitRadius) is intentionally a SEPARATE,
+always-generous calculation (floor 17px, scaled by camera.scale /
+fitScale) — decoupled from the visual radius above specifically so a
+zoomed-out galaxy's smaller dots never become harder to tap.

@@ -17,6 +17,31 @@
   const $ = (sel) => document.querySelector(sel);
   const el = (id) => document.getElementById(id);
 
+  // ---------------- Fixed-aspect device frame ----------------
+  // The whole app (every screen) renders inside an 18:9 (2:1) portrait
+  // frame, letterboxed within whatever the real viewport is — so
+  // layout is consistent across devices instead of stretching to fill
+  // odd aspect ratios. Sized in JS rather than pure CSS aspect-ratio
+  // because clamping BOTH dimensions against the real viewport (true
+  // "contain" letterboxing) isn't reliable across browsers with CSS
+  // alone.
+  const FRAME_ASPECT = 9 / 18;
+  function fitStage() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let w, h;
+    if (vw / vh > FRAME_ASPECT) {
+      h = vh;
+      w = h * FRAME_ASPECT;
+    } else {
+      w = vw;
+      h = w / FRAME_ASPECT;
+    }
+    const app = el('app');
+    app.style.width = Math.round(w) + 'px';
+    app.style.height = Math.round(h) + 'px';
+  }
+
   // ---------------- Screen management ----------------
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -74,7 +99,7 @@
       rng,
       aspect,
     });
-    SC.Engine.addLog(state, `Campaign begins. ${state.players.length - 1} rival empire(s) contest the galaxy.`, 'info');
+    SC.Engine.addLog(state, `Campaign begins. ${state.players.length - 1} rival empire(s) contest the galaxy. Fog of war is active — send Scouts to reveal unexplored worlds.`, 'info');
     saveGame();
     enterGameScreen(false);
   }
@@ -107,8 +132,9 @@
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return null;
       const s = JSON.parse(raw);
-      if (s && s.status === 'active') return s;
-      return null;
+      if (!s || s.status !== 'active') return null;
+      if (!s.intel) { s.intel = {}; SC.Engine.refreshVision(s); } // migrate saves from before fog of war
+      return s;
     } catch (e) { return null; }
   }
   function clearSave() {
@@ -144,21 +170,35 @@
     ui.selectedId = planet.id;
     const human = state.players.find(p => p.isHuman);
     const isMine = planet.owner === human.id;
-    const owner = planet.owner ? SC.Engine.playerById(state, planet.owner) : null;
+    const view = SC.Engine.planetView(state, planet);
 
     let html = '';
-    html += `<div class="planet-title">
-      <h2>${planet.name}</h2>
-      <span class="planet-tag">Class ${planet.className}</span>
-      ${planet.isHome ? '<span class="planet-tag">🏠 Home</span>' : ''}
-    </div>`;
-    html += `<div class="planet-sub">${owner ? (isMine ? 'Under your command' : `Held by ${owner.name}`) : 'Unclaimed / neutral world'}</div>`;
 
-    const slotsUsed = planet.factories + planet.labs;
+    if (!view.known) {
+      html += `<div class="planet-title"><h2>${escapeHtml(planet.name)}</h2><span class="planet-tag">🌫️ Unexplored</span></div>`;
+      html += `<div class="planet-sub">No intel on this world yet.</div>`;
+      html += `<p class="hint">Send a Scout (or any fleet) here to survey it — class, garrison, and ownership stay hidden until you do. Scouts project the widest sensor range while in transit.</p>`;
+      el('planetPanelBody').innerHTML = html;
+      el('planet-panel').classList.remove('hidden');
+      el('sheet-backdrop').classList.remove('hidden');
+      return;
+    }
+
+    const owner = view.owner ? SC.Engine.playerById(state, view.owner) : null;
+
+    html += `<div class="planet-title">
+      <h2>${escapeHtml(planet.name)}</h2>
+      <span class="planet-tag">Class ${view.className}</span>
+      ${view.isHome ? '<span class="planet-tag">🏠 Home</span>' : ''}
+      ${view.stale ? `<span class="planet-tag">🕓 Turn ${view.lastSeenTurn}</span>` : ''}
+    </div>`;
+    html += `<div class="planet-sub">${owner ? (isMine ? 'Under your command' : `Held by ${owner.name}`) : 'Unclaimed / neutral world'}${view.stale ? ' — last surveyed, may have changed' : ''}</div>`;
+
+    const slotsUsed = view.factories + view.labs;
     html += `<div class="stat-grid">
-      <div class="stat-box"><div class="v">${slotsUsed}/${planet.slots}</div><div class="l">Slots</div></div>
-      <div class="stat-box"><div class="v">${planet.factories}</div><div class="l">Factories</div></div>
-      <div class="stat-box"><div class="v">${planet.labs}</div><div class="l">Labs</div></div>
+      <div class="stat-box"><div class="v">${slotsUsed}/${view.slots}</div><div class="l">Slots</div></div>
+      <div class="stat-box"><div class="v">${view.factories}</div><div class="l">Factories</div></div>
+      <div class="stat-box"><div class="v">${view.labs}</div><div class="l">Labs</div></div>
     </div>`;
 
     if (isMine) {
@@ -177,11 +217,15 @@
     } else {
       html += `<div class="section-title">${owner ? 'Garrison (est.)' : 'Neutral Defense'}</div>`;
       if (owner) {
-        html += garrisonHtml(planet.stationed);
+        html += garrisonHtml(view.stationed);
       } else {
-        html += `<div class="garrison-line"><span>Defense Strength</span><span>${planet.neutralDefense}</span></div>`;
+        html += `<div class="garrison-line"><span>Defense Strength</span><span>${view.neutralDefense}</span></div>`;
       }
-      html += `<p class="hint">Drag from one of your fleets on the map, or use Send Fleet on an owned planet, and choose this world as the destination.</p>`;
+      if (view.stale) {
+        html += `<p class="hint">This is last-known intel from turn ${view.lastSeenTurn} — the real garrison may have changed since. Fly back over it to refresh.</p>`;
+      } else {
+        html += `<p class="hint">Drag from one of your fleets on the map, or use Send Fleet on an owned planet, and choose this world as the destination.</p>`;
+      }
     }
 
     el('planetPanelBody').innerHTML = html;
@@ -269,8 +313,14 @@
         <select id="destSelect" style="width:100%;padding:10px;border-radius:10px;background:var(--panel2);color:var(--text);border:1px solid var(--line);margin-bottom:10px;">
         <option value="">Choose a target planet…</option>
         ${others.map(({ p, d }) => {
-          const owner = p.owner ? SC.Engine.playerById(state, p.owner) : null;
-          const tag = owner ? (owner.isHuman ? 'yours' : owner.name) : 'neutral';
+          const view = SC.Engine.planetView(state, p);
+          let tag;
+          if (!view.known) tag = 'unexplored';
+          else {
+            const owner = view.owner ? SC.Engine.playerById(state, view.owner) : null;
+            tag = owner ? (owner.isHuman ? 'yours' : owner.name) : 'neutral';
+            if (view.stale) tag += `, turn ${view.lastSeenTurn}`;
+          }
           return `<option value="${p.id}">${escapeHtml(p.name)} — ${tag} — ${Math.round(d)}u</option>`;
         }).join('')}
         </select>`;
@@ -555,6 +605,9 @@
 
   // ---------------- Boot ----------------
   document.addEventListener('DOMContentLoaded', () => {
+    fitStage();
+    window.addEventListener('resize', fitStage);
+    window.addEventListener('orientationchange', fitStage);
     initSetupForm();
     initChrome();
     initInput();

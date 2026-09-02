@@ -37,8 +37,14 @@ SC.MapGen = {
 
     // World bounds are shaped to match the actual on-screen map viewport
     // (aspect = width/height) so the generated galaxy fills the canvas
-    // edge-to-edge instead of floating in a letterboxed strip.
-    const worldW = Math.round(760 + planetCount * 6);
+    // edge-to-edge instead of floating in a letterboxed strip. Width
+    // scales with sqrt(planetCount) so world AREA — not just width —
+    // scales in direct proportion to planet count (see WORLD_REFERENCE_*
+    // in engine.js): a 5x-the-planets universe is a 5x-the-area universe,
+    // keeping planet density constant across all four size presets.
+    const refCount = SC.CONST.WORLD_REFERENCE_PLANET_COUNT;
+    const refWidth = SC.CONST.WORLD_REFERENCE_WIDTH;
+    const worldW = Math.round(refWidth * Math.sqrt(planetCount / refCount));
     const worldH = Math.round(worldW / (aspect || 0.6));
     const margin = Math.max(46, Math.min(worldW, worldH) * 0.07);
 

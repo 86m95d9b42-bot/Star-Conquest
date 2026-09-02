@@ -13,7 +13,8 @@ function seededStars(seed, count) {
 SC.Render = (function () {
   let canvas, ctx, dpr = 1;
   let camera = { x: 0, y: 0, scale: 1 };
-  let fitScale = 1;
+  let fitScale = 1;     // default/initial view scale — pinned to the Tiny-size reference world (see fitCamera), so it's the SAME on every universe size
+  let minZoomScale = 1; // how far out you're allowed to pinch/scroll — lets a bigger universe's whole galaxy still be seen if you zoom all the way out
   let stars = [];
   let starW = 0, starH = 0;
   let t0 = performance.now();
@@ -35,23 +36,44 @@ SC.Render = (function () {
 
   function fitCamera(state) {
     const rect = canvas.getBoundingClientRect();
-    const sx = rect.width / state.worldW;
-    const sy = rect.height / state.worldH;
-    fitScale = Math.min(sx, sy) * 0.985;
+
+    // The default view is pinned to what the SMALLEST (Tiny) universe
+    // would need to fit on screen, not the actual (possibly much
+    // bigger) world — so planet size and spacing at the default zoom
+    // look identical no matter which universe size was picked. Bigger
+    // universes are then a wider galaxy to pan/zoom around rather than
+    // the same view squeezed smaller to fit it all in at once.
+    const refWorldW = SC.CONST.WORLD_REFERENCE_WIDTH;
+    const refWorldH = refWorldW * (state.worldH / state.worldW); // same aspect as the real world
+    fitScale = Math.min(rect.width / refWorldW, rect.height / refWorldH) * 0.985;
+
+    // But you can still zoom all the way out to see a big galaxy in
+    // full if you want to — that floor is based on the ACTUAL world.
+    const wholeWorldScale = Math.min(rect.width / state.worldW, rect.height / state.worldH) * 0.985;
+    minZoomScale = Math.min(fitScale, wholeWorldScale);
+
     camera.scale = fitScale;
-    camera.x = state.worldW / 2;
-    camera.y = state.worldH / 2;
+
+    // Center on the player's home planet rather than the galaxy's
+    // geometric center — once a universe is bigger than one screen at
+    // the (now fixed) default zoom, the geometric center may not show
+    // anything the player has even scouted yet.
+    const human = state.players.find(p => p.isHuman);
+    const home = human ? state.planets.find(p => p.id === human.homePlanetId) : null;
+    camera.x = home ? home.x : state.worldW / 2;
+    camera.y = home ? home.y : state.worldH / 2;
+
     if (starW !== state.worldW || starH !== state.worldH) {
       stars = seededStars(state.worldW * 31 + state.worldH, 260);
       starW = state.worldW; starH = state.worldH;
     }
+    clampCamera(state);
   }
 
   function clampCamera(state) {
     const rect = canvas.getBoundingClientRect();
-    const minScale = fitScale * 0.85;
     const maxScale = fitScale * 3.2;
-    camera.scale = Math.max(minScale, Math.min(maxScale, camera.scale));
+    camera.scale = Math.max(minZoomScale, Math.min(maxScale, camera.scale));
     const halfW = (rect.width / camera.scale) / 2;
     const halfH = (rect.height / camera.scale) / 2;
     const slack = 0.15;
@@ -75,23 +97,38 @@ SC.Render = (function () {
     };
   }
 
-  function planetScreenRadius(planet) {
-    const base = 7 + planet.classId * 2.6;
-    return Math.max(11, base * (camera.scale / fitScale));
+  // Radius is defined in WORLD units and scaled by the true camera
+  // zoom (not normalized against fitScale) so it shrinks together with
+  // the on-screen gap between planets on more-zoomed-out (larger)
+  // universes — otherwise a fixed screen-pixel dot size against a
+  // smaller on-screen gap reads as "crowded" even when the underlying
+  // world-space planet spacing is identical across universe sizes
+  // (see WORLD_REFERENCE_* in engine.js / section 3 of the rules doc).
+  function planetScreenRadius(classId) {
+    const worldRadius = 18 + classId * 7;
+    return Math.max(4, worldRadius * camera.scale);
+  }
+
+  // Tap target is independent of the drawn radius — both so an
+  // unexplored planet's silhouette can't tip off its true class
+  // through touch area, and so shrinking the visual dot on large,
+  // zoomed-out universes (above) never makes planets harder to tap.
+  function planetHitRadius() {
+    return Math.max(17, 20 * (camera.scale / fitScale));
   }
 
   function planetAtScreen(sx, sy, state) {
     let hit = null, hitD = Infinity;
     for (const p of state.planets) {
       const s = worldToScreen(p.x, p.y);
-      const r = planetScreenRadius(p) + 6;
+      const r = planetHitRadius();
       const d = Math.hypot(s.x - sx, s.y - sy);
       if (d <= r && d < hitD) { hit = p; hitD = d; }
     }
     return hit;
   }
 
-  function ownerColor(state, ownerId, playerViewId) {
+  function ownerColor(state, ownerId) {
     if (!ownerId) return '#5b6285';
     const player = SC.Engine.playerById(state, ownerId);
     return player ? player.color : '#5b6285';
@@ -126,12 +163,14 @@ SC.Render = (function () {
     }
     ctx.restore();
 
-    // fleets in transit
+    // fleets in transit — fog of war hides rival fleet movement entirely;
+    // only your own fleets (and their routes) are ever drawn.
+    const human = state.players.find(pl => pl.isHuman);
     for (const fleet of state.fleets) {
+      if (fleet.owner !== human.id) continue;
       const from = SC.Engine.planetById(state, fleet.from);
       const to = SC.Engine.planetById(state, fleet.to);
       if (!from || !to) continue;
-      const progress = Math.min(1, Math.max(0, 1 - (fleet.arrivalTurn - state.turn) / Math.max(1, fleet.totalTurns)));
       const s1 = worldToScreen(from.x, from.y);
       const s2 = worldToScreen(to.x, to.y);
       const color = ownerColor(state, fleet.owner);
@@ -147,8 +186,9 @@ SC.Render = (function () {
       ctx.stroke();
       ctx.restore();
 
-      const fx = s1.x + (s2.x - s1.x) * progress;
-      const fy = s1.y + (s2.y - s1.y) * progress;
+      const worldPos = SC.Engine.fleetPosition(state, fleet);
+      const fPos = worldToScreen(worldPos.x, worldPos.y);
+      const fx = fPos.x, fy = fPos.y;
       const ang = Math.atan2(s2.y - s1.y, s2.x - s1.x);
 
       ctx.save();
@@ -179,14 +219,23 @@ SC.Render = (function () {
       ctx.restore();
     }
 
-    // planets
+    // planets — everything about what's drawn (color, class-derived
+    // size, garrison badge) is resolved through the human's fog-of-war
+    // view, never the raw planet object, so a never-scouted world can't
+    // leak its true owner/class/defense through the map itself.
     for (const p of state.planets) {
       const s = worldToScreen(p.x, p.y);
       if (s.x < -40 || s.x > rect.width + 40 || s.y < -40 || s.y > rect.height + 40) continue;
-      const r = planetScreenRadius(p);
-      const color = ownerColor(state, p.owner);
+
+      const view = SC.Engine.planetView(state, p);
+      const r = planetScreenRadius(view.classId);
+      const color = view.known ? ownerColor(state, view.owner) : '#2a3060';
+      const fogAlpha = !view.known ? 0.55 : (view.stale ? 0.6 : 1);
       const isSelected = ui.selectedId === p.id;
       const isDragSource = ui.drag && ui.drag.active && ui.drag.fromId === p.id;
+
+      ctx.save();
+      ctx.globalAlpha = fogAlpha;
 
       if (isSelected || isDragSource) {
         ctx.save();
@@ -199,17 +248,21 @@ SC.Render = (function () {
         ctx.restore();
       }
 
-      const rg = ctx.createRadialGradient(s.x - r * 0.3, s.y - r * 0.3, r * 0.1, s.x, s.y, r);
-      rg.addColorStop(0, lighten(color, 0.35));
-      rg.addColorStop(1, color);
-      ctx.fillStyle = rg;
+      if (view.known) {
+        const rg = ctx.createRadialGradient(s.x - r * 0.3, s.y - r * 0.3, r * 0.1, s.x, s.y, r);
+        rg.addColorStop(0, lighten(color, 0.35));
+        rg.addColorStop(1, color);
+        ctx.fillStyle = rg;
+      } else {
+        ctx.fillStyle = color; // flat fill, no shading — a silhouette, not a surveyed world
+      }
       ctx.beginPath();
       ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
       ctx.fill();
 
-      if (!p.owner) {
+      if (view.known && !view.owner) {
         ctx.save();
-        ctx.globalAlpha = 0.55;
+        ctx.globalAlpha = 0.55 * fogAlpha;
         ctx.strokeStyle = '#070a1a';
         ctx.lineWidth = 1.2;
         ctx.setLineDash([2, 3]);
@@ -219,10 +272,21 @@ SC.Render = (function () {
         ctx.restore();
       }
 
-      if (p.isHome) {
+      if (!view.known) {
+        ctx.save();
+        ctx.strokeStyle = '#7d86bd';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (view.isHome) {
         ctx.save();
         ctx.strokeStyle = '#ffffff';
-        ctx.globalAlpha = 0.75;
+        ctx.globalAlpha = 0.75 * fogAlpha;
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.arc(s.x, s.y, r + 3, 0, Math.PI * 2);
@@ -230,17 +294,17 @@ SC.Render = (function () {
         ctx.restore();
       }
 
-      const shipCount = SC.Engine.fleetShipTotal(p.stationed);
+      const shipCount = view.stationed ? SC.Engine.fleetShipTotal(view.stationed) : 0;
       if (shipCount > 0 && camera.scale > fitScale * 0.7) {
         ctx.save();
         ctx.font = `700 ${Math.max(9, r * 0.55)}px -apple-system,sans-serif`;
         ctx.fillStyle = '#04150f';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'rgba(4,21,15,.85)';
+        ctx.fillStyle = view.stale ? 'rgba(150,160,200,.85)' : 'rgba(4,21,15,.85)';
         ctx.beginPath();
         ctx.arc(s.x + r * 0.7, s.y + r * 0.7, Math.max(8, r * 0.42), 0, Math.PI * 2);
-        ctx.fillStyle = '#f2d94e';
+        ctx.fillStyle = view.stale ? '#9aa4d6' : '#f2d94e';
         ctx.fill();
         ctx.fillStyle = '#241c00';
         ctx.fillText(shipCount, s.x + r * 0.7, s.y + r * 0.72);
@@ -255,6 +319,8 @@ SC.Render = (function () {
         ctx.fillText(p.name, s.x, s.y + r + 13);
         ctx.restore();
       }
+
+      ctx.restore();
     }
 
     ctx.restore();

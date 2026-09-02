@@ -6,6 +6,14 @@ window.SC = window.SC || {};
 SC.CONST = {
   UNIVERSE_SIZES: { tiny: 12, small: 24, medium: 40, large: 60 },
 
+  // World area scales in direct proportion to planet count (area is
+  // width^2 for a fixed aspect ratio, so width scales with the square
+  // root of the count) — Large has 5x Tiny's planets and 5x its area,
+  // so planet density/spacing stays the same across every universe
+  // size instead of packing tighter as the count goes up.
+  WORLD_REFERENCE_PLANET_COUNT: 12,
+  WORLD_REFERENCE_WIDTH: 832,
+
   PLANET_CLASSES: [
     { id: 1, name: 'I',   slots: 2,  weight: 34 },
     { id: 2, name: 'II',  slots: 4,  weight: 27 },
@@ -35,6 +43,16 @@ SC.CONST = {
 
   MOVE_UNIT_DISTANCE: 95,
   CLASS_DEFENSE_BONUS: 2.2, // flat defense per planet class, defenders' home turf advantage
+
+  // Fog of war: vision radius (world units) projected by the human
+  // player's own planets and in-transit fleets. AI opponents act on
+  // full ground truth (see js/ai.js) — only the human's map view and
+  // UI are restricted.
+  VISION_PLANET_BASE: 90,
+  VISION_PLANET_PER_CLASS: 22,
+  VISION_FLEET_BASE: 65,
+  VISION_FLEET_SCOUT_BONUS: 40,
+  UNKNOWN_PLANET_CLASS: 2, // radius fog planets render/hit-test at, so silhouette size can't leak true class
 
   START_CREDITS: 150,
   START_FACTORIES: 2,
@@ -80,6 +98,13 @@ function fleetMinSpeed(counts) {
 
 function emptyCounts() { return { scout: 0, fighter: 0, cruiser: 0, dreadnought: 0 }; }
 
+function fleetPosition(state, fleet) {
+  const from = state.planets.find(p => p.id === fleet.from);
+  const to = state.planets.find(p => p.id === fleet.to);
+  const progress = Math.min(1, Math.max(0, 1 - (fleet.arrivalTurn - state.turn) / Math.max(1, fleet.totalTurns)));
+  return { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress };
+}
+
 SC.Engine = {
   techLevelFromPoints,
   facilityCost,
@@ -87,6 +112,7 @@ SC.Engine = {
   fleetShipTotal,
   distance: dist,
   emptyCounts,
+  fleetPosition,
 
   estimateAttackPower(counts, techLevel) {
     return fleetPowerSum(counts, 'atk') * (1 + C.TECH_COMBAT_BONUS * techLevel);
@@ -141,7 +167,7 @@ SC.Engine = {
       player.homePlanetId = planet.id;
     });
 
-    return {
+    const state = {
       turn: 1,
       status: 'active', // active | won | lost
       universeSize,
@@ -152,6 +178,83 @@ SC.Engine = {
       fleets: [], // in-transit fleets
       log: [],
       nextFleetId: 1,
+      intel: {}, // fog of war: last-known snapshot per planet id, human's POV only
+    };
+    SC.Engine.refreshVision(state);
+    return state;
+  },
+
+  // ---- fog of war ----
+  // Vision sources are the human player's own planets and in-transit
+  // fleets; AI opponents read state.planets directly and are always
+  // omniscient (see js/ai.js) — this only governs the human's map and
+  // panel UI. Recomputed at game start and at the end of every turn.
+  refreshVision(state) {
+    const human = state.players.find(p => p.isHuman);
+    if (!human) return;
+    const visibleIds = new Set();
+
+    for (const planet of state.planets) {
+      if (planet.owner !== human.id) continue;
+      const r = C.VISION_PLANET_BASE + planet.classId * C.VISION_PLANET_PER_CLASS;
+      for (const target of state.planets) {
+        if (dist(planet, target) <= r) visibleIds.add(target.id);
+      }
+    }
+
+    for (const fleet of state.fleets) {
+      if (fleet.owner !== human.id) continue;
+      const pos = fleetPosition(state, fleet);
+      const r = C.VISION_FLEET_BASE + ((fleet.counts.scout || 0) > 0 ? C.VISION_FLEET_SCOUT_BONUS : 0);
+      for (const target of state.planets) {
+        if (dist(pos, target) <= r) visibleIds.add(target.id);
+      }
+    }
+
+    for (const id of Object.keys(state.intel)) state.intel[id].visible = false;
+    for (const id of visibleIds) {
+      const planet = SC.Engine.planetById(state, id);
+      state.intel[id] = {
+        visible: true,
+        lastSeenTurn: state.turn,
+        owner: planet.owner,
+        isHome: planet.isHome,
+        classId: planet.classId,
+        className: planet.className,
+        slots: planet.slots,
+        factories: planet.factories,
+        labs: planet.labs,
+        stationed: { ...planet.stationed },
+        neutralDefense: planet.neutralDefense,
+      };
+    }
+  },
+
+  // Resolves what the human currently knows about a planet: live data
+  // if it's in vision right now, a stale last-known snapshot if it was
+  // seen before but isn't currently in vision, or fully unknown.
+  planetView(state, planet) {
+    const intel = state.intel[planet.id];
+    if (intel && intel.visible) {
+      return {
+        known: true, visible: true, stale: false,
+        owner: planet.owner, isHome: planet.isHome, classId: planet.classId, className: planet.className,
+        slots: planet.slots, factories: planet.factories, labs: planet.labs,
+        stationed: planet.stationed, neutralDefense: planet.neutralDefense, lastSeenTurn: state.turn,
+      };
+    }
+    if (intel) {
+      return {
+        known: true, visible: false, stale: true,
+        owner: intel.owner, isHome: intel.isHome, classId: intel.classId, className: intel.className,
+        slots: intel.slots, factories: intel.factories, labs: intel.labs,
+        stationed: intel.stationed, neutralDefense: intel.neutralDefense, lastSeenTurn: intel.lastSeenTurn,
+      };
+    }
+    return {
+      known: false, visible: false, stale: false,
+      owner: null, isHome: false, classId: C.UNKNOWN_PLANET_CLASS, className: '?',
+      slots: 0, factories: 0, labs: 0, stationed: null, neutralDefense: null, lastSeenTurn: null,
     };
   },
 
@@ -344,6 +447,8 @@ SC.Engine = {
       const owner = SC.Engine.playerById(state, fleet.owner);
       if (owner && owner.alive) SC.Engine.resolveArrival(state, fleet);
     }
+
+    SC.Engine.refreshVision(state);
 
     SC.Engine.checkGameOver(state);
   },
