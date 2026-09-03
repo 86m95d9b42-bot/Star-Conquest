@@ -96,6 +96,7 @@ p{ margin:0; }
 
 #setup-form{ display:flex; flex-direction:column; gap:24px; }
 #setup-form .btn-secondary{ margin-top:0; } /* spacing now comes from the form's own gap, not this */
+#statsBtn{ margin-top:0; } /* sits in .start-scroll's own gap, same reason */
 
 fieldset{ border:none; margin:0; padding:0; }
 legend{ padding:0; margin-bottom:10px; color:var(--text-dim); font-size:13px; text-transform:uppercase; letter-spacing:1px; }
@@ -256,7 +257,9 @@ input[type=range]{ width:100%; accent-color:var(--accent); height:34px; }
 .log-list{ display:flex; flex-direction:column; gap:8px; font-size:13px; }
 .log-entry{ padding:8px 10px; background:var(--panel2); border-radius:10px; border-left:3px solid var(--accent); }
 .log-entry.combat{ border-left-color:var(--danger); }
+.log-entry.abandoned{ border-left-color:var(--text-dim); }
 .log-entry .t{ color:var(--text-dim); font-size:11px; }
+.log-entry .result-icon{ margin-right:4px; }
 
 .end-modal{ text-align:center; }
 .end-modal h2{ font-size:24px; margin-bottom:10px; }

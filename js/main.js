@@ -141,6 +141,80 @@
     try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
   }
 
+  // ---------------- Campaign history ----------------
+  const HISTORY_KEY = 'starconquest_history_v1';
+  const HISTORY_MAX = 50;
+
+  function loadHistory() {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+
+  function recordHistory(result) {
+    if (!state) return;
+    const human = state.players.find(p => p.isHuman);
+    const entry = {
+      date: Date.now(),
+      result, // 'won' | 'lost' | 'abandoned'
+      turns: state.turn,
+      universeSize: state.universeSize,
+      rivalCount: state.players.length - 1,
+      difficulty: human.difficulty,
+      planets: SC.Engine.ownedPlanets(state, human.id).length,
+      totalPlanets: state.planets.length,
+      techLevel: human.techLevel,
+    };
+    const history = loadHistory();
+    history.unshift(entry);
+    if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch (e) { /* ignore quota errors */ }
+  }
+
+  function clearHistory() {
+    try { localStorage.removeItem(HISTORY_KEY); } catch (e) { /* ignore */ }
+  }
+
+  const RESULT_LABEL = { won: '🏆 Victory', lost: '💀 Defeat', abandoned: '🏳️ Abandoned' };
+  const RESULT_CLASS = { won: '', lost: 'combat', abandoned: 'abandoned' };
+
+  function renderStats() {
+    const history = loadHistory();
+    const wins = history.filter(h => h.result === 'won');
+    const losses = history.filter(h => h.result === 'lost');
+    const decided = wins.length + losses.length;
+    const winRate = decided > 0 ? Math.round((wins.length / decided) * 100) : 0;
+    const fastestWin = wins.length ? Math.min(...wins.map(h => h.turns)) : null;
+    const biggestEmpire = history.length ? Math.max(...history.map(h => h.planets)) : 0;
+    const highestTech = history.length ? Math.max(...history.map(h => h.techLevel)) : 0;
+
+    el('statsSummary').innerHTML = `
+      <div class="stat-box"><div class="v">${history.length}</div><div class="l">Played</div></div>
+      <div class="stat-box"><div class="v">${wins.length}</div><div class="l">Wins</div></div>
+      <div class="stat-box"><div class="v">${winRate}%</div><div class="l">Win Rate</div></div>
+      <div class="stat-box"><div class="v">${fastestWin ?? '—'}</div><div class="l">Fastest Win</div></div>
+      <div class="stat-box"><div class="v">${biggestEmpire}</div><div class="l">Biggest Empire</div></div>
+      <div class="stat-box"><div class="v">${highestTech}</div><div class="l">Highest Tech</div></div>
+    `;
+
+    const list = el('statsHistoryList');
+    if (history.length === 0) {
+      list.innerHTML = `<p class="hint">No campaigns recorded yet — launch one to start your track record.</p>`;
+      return;
+    }
+    list.innerHTML = history.map(h => {
+      const dateStr = new Date(h.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      return `<div class="log-entry ${RESULT_CLASS[h.result] || ''}">
+        <div class="t">${dateStr} · ${escapeHtml(cap(h.universeSize))} · ${h.rivalCount} rival(s) · ${escapeHtml(cap(h.difficulty))}</div>
+        ${RESULT_LABEL[h.result] || h.result} — Turn ${h.turns}, ${h.planets}/${h.totalPlanets} planets, Tech ${h.techLevel}
+      </div>`;
+    }).join('');
+  }
+
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
   // ---------------- HUD ----------------
   function updateHUD() {
     const human = state.players.find(p => p.isHuman);
@@ -433,6 +507,7 @@
       ? 'Every rival home world has fallen. The galaxy is yours to command.'
       : 'Your home world has been conquered. Your empire falls silent.';
     el('end-modal').classList.remove('hidden');
+    recordHistory(state.status);
     clearSave();
   }
 
@@ -549,9 +624,19 @@
     el('restartBtn').addEventListener('click', () => {
       el('menu-modal').classList.add('hidden');
       if (confirm('Abandon this campaign and return to the main menu?')) {
+        recordHistory('abandoned');
         clearSave();
         state = null;
         showScreen('screen-start');
+      }
+    });
+
+    el('statsBtn').addEventListener('click', () => { renderStats(); el('stats-modal').classList.remove('hidden'); });
+    el('statsCloseBtn').addEventListener('click', () => el('stats-modal').classList.add('hidden'));
+    el('statsClearBtn').addEventListener('click', () => {
+      if (confirm('Clear all recorded campaign history? This can\'t be undone.')) {
+        clearHistory();
+        renderStats();
       }
     });
 

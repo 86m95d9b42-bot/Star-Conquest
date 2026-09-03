@@ -74,6 +74,7 @@
         <button type="button" class="btn-secondary" id="continueBtn" hidden>Continue Saved Game</button>
       </form>
 
+      <button type="button" class="btn-secondary" id="statsBtn">📊 Campaign Stats</button>
      </div>
   </section>
 
@@ -142,6 +143,20 @@
       <div id="logList" class="log-list"></div>
       <div class="modal-actions">
         <button class="btn-primary" id="logCloseBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS MODAL -->
+  <div id="stats-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Campaign Stats</h2>
+      <div id="statsSummary" class="stat-grid"></div>
+      <div class="section-title">Recent Campaigns</div>
+      <div id="statsHistoryList" class="log-list"></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="statsClearBtn">Clear History</button>
+        <button class="btn-primary" id="statsCloseBtn">Close</button>
       </div>
     </div>
   </div>
