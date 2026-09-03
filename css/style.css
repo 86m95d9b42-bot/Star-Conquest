@@ -94,6 +94,9 @@ p{ margin:0; }
 .title-block h1 span{ display:block; color:var(--accent); font-size:26px; letter-spacing:6px; }
 .tagline{ color:var(--text-dim); margin-top:8px; font-size:14px; letter-spacing:.5px; }
 
+#setup-form{ display:flex; flex-direction:column; gap:24px; }
+#setup-form .btn-secondary{ margin-top:0; } /* spacing now comes from the form's own gap, not this */
+
 fieldset{ border:none; margin:0; padding:0; }
 legend{ padding:0; margin-bottom:10px; color:var(--text-dim); font-size:13px; text-transform:uppercase; letter-spacing:1px; }
 legend span{ color:var(--accent2); font-weight:700; }

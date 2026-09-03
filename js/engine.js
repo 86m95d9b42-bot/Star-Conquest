@@ -12,7 +12,7 @@ SC.CONST = {
   // so planet density/spacing stays the same across every universe
   // size instead of packing tighter as the count goes up.
   WORLD_REFERENCE_PLANET_COUNT: 12,
-  WORLD_REFERENCE_WIDTH: 832,
+  WORLD_REFERENCE_WIDTH: 8320,
 
   PLANET_CLASSES: [
     { id: 1, name: 'I',   slots: 2,  weight: 34 },
@@ -38,7 +38,7 @@ SC.CONST = {
   LAB_OUTPUT: 4,
 
   // Cumulative tech points required to reach each tech level (index = level).
-  TECH_THRESHOLDS: [0, 24, 60, 110, 180, 270, 390, 540, 730, 970, 1260],
+  TECH_THRESHOLDS: [0, 240, 600, 1100, 1800, 2700, 3900, 5400, 7300, 9700, 12600],
   TECH_COMBAT_BONUS: 0.12,
 
   MOVE_UNIT_DISTANCE: 95,
