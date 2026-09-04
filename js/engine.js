@@ -12,7 +12,7 @@ SC.CONST = {
   // so planet density/spacing stays the same across every universe
   // size instead of packing tighter as the count goes up.
   WORLD_REFERENCE_PLANET_COUNT: 12,
-  WORLD_REFERENCE_WIDTH: 8320,
+  WORLD_REFERENCE_WIDTH: 1664,
 
   PLANET_CLASSES: [
     { id: 1, name: 'I',   slots: 2,  weight: 34 },
@@ -167,6 +167,11 @@ SC.Engine = {
       player.homePlanetId = planet.id;
     });
 
+    const stats = {};
+    for (const player of players) {
+      stats[player.id] = { shipsBuilt: 0, planetsCaptured: 0, planetsLost: 0, battlesWon: 0, battlesLost: 0, peakPlanets: 1 };
+    }
+
     const state = {
       turn: 1,
       status: 'active', // active | won | lost
@@ -179,9 +184,20 @@ SC.Engine = {
       log: [],
       nextFleetId: 1,
       intel: {}, // fog of war: last-known snapshot per planet id, human's POV only
+      stats, // per-player running totals for the end-of-game stat screen
     };
     SC.Engine.refreshVision(state);
     return state;
+  },
+
+  // Tracks each player's largest simultaneous planet holding, for the
+  // end-of-game stat screen ("empire at its peak").
+  updatePeakStats(state) {
+    for (const player of state.players) {
+      const owned = SC.Engine.ownedPlanets(state, player.id).length;
+      const s = state.stats[player.id];
+      if (s && owned > s.peakPlanets) s.peakPlanets = owned;
+    }
   },
 
   // ---- fog of war ----
@@ -309,6 +325,7 @@ SC.Engine = {
     const player = SC.Engine.playerById(state, planet.owner);
     player.credits -= check.cost;
     planet.stationed[shipId] = (planet.stationed[shipId] || 0) + qty;
+    state.stats[player.id].shipsBuilt += qty;
     return { ok: true };
   },
 
@@ -390,6 +407,13 @@ SC.Engine = {
       planet.stationed = survivors;
       planet.neutralDefense = 0;
 
+      state.stats[attacker.id].planetsCaptured++;
+      state.stats[attacker.id].battlesWon++;
+      if (defenderPlayer) {
+        state.stats[defenderPlayer.id].planetsLost++;
+        state.stats[defenderPlayer.id].battlesLost++;
+      }
+
       SC.Engine.addLog(state, `${attacker.name} conquers ${planet.name}${prevOwnerId ? ` from ${defenderPlayer.name}` : ''}!`, 'combat');
 
       if (wasHome && defenderPlayer) {
@@ -397,11 +421,13 @@ SC.Engine = {
         SC.Engine.addLog(state, `${defenderPlayer.name}'s home world has fallen — they are eliminated!`, 'combat');
       }
     } else {
+      state.stats[attacker.id].battlesLost++;
       if (planet.owner) {
         for (const id of C.SHIP_ORDER) {
           const n = planet.stationed[id] || 0;
           planet.stationed[id] = Math.round(n * (1 - lossFraction));
         }
+        state.stats[defenderPlayer.id].battlesWon++;
         SC.Engine.addLog(state, `${defenderPlayer.name} repels ${attacker.name}'s attack on ${planet.name}.`, 'combat');
       } else {
         planet.neutralDefense = Math.max(0, Math.round(planet.neutralDefense * (1 - lossFraction)));
@@ -449,6 +475,7 @@ SC.Engine = {
     }
 
     SC.Engine.refreshVision(state);
+    SC.Engine.updatePeakStats(state);
 
     SC.Engine.checkGameOver(state);
   },

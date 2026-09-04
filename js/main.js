@@ -134,6 +134,13 @@
       const s = JSON.parse(raw);
       if (!s || s.status !== 'active') return null;
       if (!s.intel) { s.intel = {}; SC.Engine.refreshVision(s); } // migrate saves from before fog of war
+      if (!s.stats) { // migrate saves from before the end-of-game stat screen
+        s.stats = {};
+        for (const player of s.players) {
+          const owned = SC.Engine.ownedPlanets(s, player.id).length;
+          s.stats[player.id] = { shipsBuilt: 0, planetsCaptured: 0, planetsLost: 0, battlesWon: 0, battlesLost: 0, peakPlanets: Math.max(1, owned) };
+        }
+      }
       return s;
     } catch (e) { return null; }
   }
@@ -506,6 +513,25 @@
     el('endBody').textContent = won
       ? 'Every rival home world has fallen. The galaxy is yours to command.'
       : 'Your home world has been conquered. Your empire falls silent.';
+
+    const human = state.players.find(p => p.isHuman);
+    const s = state.stats[human.id];
+    const owned = SC.Engine.ownedPlanets(state, human.id).length;
+    const battles = s.battlesWon + s.battlesLost;
+    const battleRate = battles > 0 ? Math.round((s.battlesWon / battles) * 100) : 0;
+
+    el('endStats').innerHTML = `
+      <div class="stat-box"><div class="v">${state.turn}</div><div class="l">Turns Survived</div></div>
+      <div class="stat-box"><div class="v">${owned}/${state.planets.length}</div><div class="l">Planets Held</div></div>
+      <div class="stat-box"><div class="v">${s.peakPlanets}</div><div class="l">Peak Planets</div></div>
+      <div class="stat-box"><div class="v">${human.techLevel}</div><div class="l">Tech Level</div></div>
+      <div class="stat-box"><div class="v">${s.planetsCaptured}</div><div class="l">Planets Captured</div></div>
+      <div class="stat-box"><div class="v">${s.planetsLost}</div><div class="l">Planets Lost</div></div>
+      <div class="stat-box"><div class="v">${s.shipsBuilt}</div><div class="l">Ships Built</div></div>
+      <div class="stat-box"><div class="v">${battles}</div><div class="l">Battles Fought</div></div>
+      <div class="stat-box"><div class="v">${battleRate}%</div><div class="l">Battle Win Rate</div></div>
+    `;
+
     el('end-modal').classList.remove('hidden');
     recordHistory(state.status);
     clearSave();
