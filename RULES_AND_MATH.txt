@@ -240,56 +240,90 @@ distance itself is plain Euclidean distance in world-space:
 8. COMBAT
 -----------
 Combat auto-resolves the instant a fleet's arrivalTurn is reached —
-there's no player control during the fight itself (matching the
-original game's design, per the source research). It only triggers
-if the destination planet is not already owned by the fleet's owner;
-arriving at your own planet just reinforces its garrison instead
-(counts are added directly, no combat roll).
+there's no player control during the individual rounds. It only
+triggers if the destination planet is not already owned by the
+fleet's owner; arriving at your own planet just reinforces its
+garrison instead (counts are added directly, no fight). For the human
+player, resolveArrival's full result is replayed round by round in a
+battle screen (js/main.js's battle-modal flow) — but the math below
+runs to completion immediately, synchronously, before any of that
+replay is shown; the screen is a presentation of an already-decided
+outcome, not something that can change what happens.
 
-Attack power:
+Combat plays out over ROUNDS instead of one roll — each round both
+sides deal damage based on their CURRENT (already-attritted) strength,
+so the fight naturally self-paces: a lopsided matchup still ends in
+round 1, while an even one drags out several rounds of attrition.
+
+Each round, both sides compute this round's power with the same
+formulas as before:
 
     attackPower = sum(shipCount_i * ATK_i)
                   * (1 + 0.12 * attackerTechLevel)
-                  * randomFactor
 
 Defense power against an OWNED planet:
 
-    defendPower = (sum(garrisonCount_i * DEF_i) + 2.2 * planetClassId)
+    defendPower = (sum(garrisonCount_i * DEF_i) + defenseBonusRemaining)
                   * (1 + 0.12 * defenderTechLevel)
-                  * randomFactor
 
 Defense power against a NEUTRAL planet:
 
-    defendPower = planet.neutralDefense * randomFactor
+    defendPower = neutralDefenseRemaining
 
-`randomFactor` is drawn independently for attacker and defender as
-0.85 + random()*0.3 — i.e. uniformly between 0.85x and 1.15x, a ±15%
-swing that lets a somewhat weaker force occasionally win and a
-somewhat stronger one occasionally stumble, without ever letting luck
-overturn a truly lopsided fight.
+Each side's ROUND DAMAGE is its power divided by ROUND_DIVISOR (4),
+then hit with its own fresh random roll (0.85–1.15x, drawn separately
+for attacker and defender, every round):
 
-`2.2 * planetClassId` (CLASS_DEFENSE_BONUS) is a flat home-turf bonus
-for owned planets scaled by their class — a Class V home world gets
-+11 defense "for free" on top of its garrison, on the same additive
-scale as ship DEF stats.
+    roundDamage = (power / ROUND_DIVISOR) * randomFactor
 
-Whoever has the higher power wins outright — there's no partial
-success. Losses are then proportional to how close the fight was:
+The divisor is what actually produces multiple rounds: ATK stats
+outweigh DEF stats by design (a Fighter is 3 ATK / 2 DEF), so without
+it, one exchange is almost always lethal to the losing side — no
+different from the old single-roll model. Dividing by 4 means a
+genuinely close fight needs several rounds of attrition to resolve,
+while a lopsided one can still saturate (see below) in round 1.
 
-    lossFraction = clamp(loserPower / winnerPower, 0, 0.9)
+Each side's HP POOL for the round is its own ships' DEF stat total —
+`sum(shipCount_i * DEF_i)` — except a neutral planet's pool is just
+its flat neutralDefense number. The fraction of that pool destroyed
+this round is:
 
-The LOSER is always wiped out (fleet destroyed if attacking,
-garrison/neutralDefense zeroed if defending and losing). The WINNER
-survives but takes casualties: each of the winner's ship-type counts
-is reduced by round(count * lossFraction). So a decisive win (loser
-power close to 0) costs the winner almost nothing; a near-even fight
-(loser power close to winner power) costs the winner up to 90% of
-their force — deliberately capped below 100% so a winning fleet can
-never be entirely erased by its own victory.
+    fraction = min(1, roundDamage / HP pool)
+
+and every ship type on the losing end of that fraction loses
+round(count_i * fraction) ships (applied proportionally across types,
+no per-type targeting). Because `fraction` saturates at 1.0, a truly
+decisive round can still wipe a side out in one exchange — the model
+degrades gracefully back to "old" one-shot behavior at the extremes,
+it just no longer HAS to.
+
+CLASS_DEFENSE_BONUS (2.2 * planetClassId) is still the flat home-turf
+bonus for an owned planet, and it still boosts the defender's damage
+OUTPUT every round exactly as before — but it no longer disappears
+instantly just because the garrison does. It's tracked as a separate,
+decaying "planetary defenses" reserve (defenseBonusRemaining above,
+starting at CLASS_DEFENSE_BONUS * classId) that soaks up the SAME
+`fraction` of damage the garrison does each round, multiplicatively
+(`defenseBonusRemaining *= (1 - fraction)`) — so a planet stripped
+down to zero garrison ships still puts up a fight from its class
+bonus alone, rather than falling to the first fleet that shows up,
+and that fixed defense still eventually wears down rather than
+defending forever.
+
+The battle ends when either side's ships hit 0 (for a neutral
+defender, when neutralDefenseRemaining hits 0), or after
+COMBAT_MAX_ROUNDS (8) rounds — whichever comes first. The round cap
+is a safety valve for near-perfectly-matched fights that would
+otherwise grind on close to forever; at the cap, whichever side has
+more of its round-power formula left simply wins outright. A
+simultaneous double-knockout in the same round goes to the defender,
+same as a tie always has (attackerWins requires strictly more power,
+never equal).
 
 If the attacker wins:
   - Ownership of the planet flips to the attacker.
-  - The attacker's surviving ships become the planet's new garrison.
+  - The attacker's surviving ships (whatever's left after every round
+    fought) become the planet's new garrison.
   - Any existing Factories/Labs on the planet are left intact
     (conquest doesn't destroy infrastructure, only defenders).
   - If the captured planet was the defender's HOME planet, that
@@ -300,10 +334,18 @@ If the attacker wins:
     step.
 
 If the defender wins:
-  - An owned planet's garrison takes the proportional loss above.
-  - A neutral planet's neutralDefense is reduced by the same
-    fraction (so repeated failed attacks gradually wear a neutral
-    world down even without ever taking it).
+  - An owned planet's garrison is left at whatever survived the
+    rounds fought (could be the untouched original count, if the
+    attacker was wiped out before landing a hit).
+  - A neutral planet's neutralDefense is left at whatever HP
+    survived, the same way — so repeated failed attacks gradually
+    wear a neutral world down even without ever taking it.
+
+Note for anyone re-deriving this file from source: resolveArrival
+returns a structured report (per-round losses/remaining-strength
+snapshots, not just a log line) so the UI can replay a human battle
+round by round; AI-vs-AI and AI-vs-neutral fights still resolve the
+exact same way, they're just never shown on screen (see section 12).
 
 
 9. TURN SEQUENCE
@@ -449,6 +491,14 @@ never scouted will still appear there. Treat it as empire-wide
 intelligence-report flavor text rather than something your Scouts
 specifically witnessed; restricting it per-event was judged not worth
 the added bookkeeping for what it'd change strategically.
+
+The round-by-round battle screen (section 8) is scoped tighter than
+the log: js/main.js only queues and displays a battle report where the
+human is the attacker or the defender. A fight between two rivals (or
+a rival vs. a neutral world) still resolves with the exact same
+combat math and still gets its one-line summary in the log above —
+it's just never played back on screen, since the human was never a
+party to it.
 
 Worth noting: since world area now scales with planet count (section
 3), minDist is ~205 on every universe size, not just Tiny — and your

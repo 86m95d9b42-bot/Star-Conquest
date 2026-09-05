@@ -168,6 +168,35 @@
     </div>
   </div>
 
+  <!-- BATTLE MODAL -->
+  <div id="battle-modal" class="modal-backdrop hidden">
+    <div class="modal battle-modal">
+      <div class="battle-header">
+        <div class="battle-planet" id="battlePlanetName"></div>
+        <div class="battle-sides">
+          <span class="battle-side-name" id="battleAttackerName"></span>
+          <span class="battle-vs">vs</span>
+          <span class="battle-side-name" id="battleDefenderName"></span>
+        </div>
+      </div>
+
+      <div class="battle-tallies">
+        <div class="battle-tally" id="battleAttackerTally"></div>
+        <div class="battle-tally" id="battleDefenderTally"></div>
+      </div>
+
+      <div class="section-title">Battle Log</div>
+      <div id="battleLog" class="log-list battle-log"></div>
+
+      <div id="battleResult" class="battle-result hidden"></div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" id="battleSkipBtn">Skip</button>
+        <button class="btn-primary" id="battleContinueBtn" hidden>Continue</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MENU MODAL -->
   <div id="menu-modal" class="modal-backdrop hidden">
     <div class="modal">

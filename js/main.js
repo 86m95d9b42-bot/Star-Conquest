@@ -499,17 +499,150 @@
   // ---------------- End turn / game over ----------------
   function doEndTurn() {
     const before = state.log.length;
-    SC.Engine.endTurn(state);
+    const { battles } = SC.Engine.endTurn(state);
     const newEvents = state.log.slice(0, Math.max(0, state.log.length - before));
     const combatEvents = newEvents.filter(e => e.kind === 'combat');
+
+    const human = state.players.find(p => p.isHuman);
+    battleQueue = battles.filter(b => b.attackerId === human.id || b.defenderId === human.id);
+
     updateHUD();
     hidePlanetPanel();
-    if (combatEvents.length > 0) toast(combatEvents[0].text);
-    else toast(`Turn ${state.turn} begins.`);
     saveGame();
 
-    if (state.status !== 'active') {
-      showEndModal();
+    if (battleQueue.length > 0) {
+      showNextBattle();
+    } else {
+      if (combatEvents.length > 0) toast(combatEvents[0].text);
+      else toast(`Turn ${state.turn} begins.`);
+      if (state.status !== 'active') showEndModal();
+    }
+  }
+
+  // ---------------- Battle modal (play-by-play, human battles only) ----------------
+  let battleQueue = [];
+  let currentBattle = null;
+  let battleRoundIndex = -1;
+  let battleTimer = null;
+
+  function shipTallyHtml(counts, bonusRemaining) {
+    if ('neutral' in counts) {
+      return `<div class="garrison-line ${counts.neutral <= 0 ? 'wiped' : ''}"><span>🛡️ Planetary Defense</span><span>${Math.max(0, Math.round(counts.neutral))}</span></div>`;
+    }
+    let rows = '';
+    for (const id of C.SHIP_ORDER) {
+      const n = counts[id] || 0;
+      const def = C.SHIP_TYPES[id];
+      rows += `<div class="garrison-line ${n <= 0 ? 'wiped' : ''}"><span>${def.icon} ${def.name}</span><span>${n}</span></div>`;
+    }
+    if (bonusRemaining > 0.5) rows += `<div class="bt-bonus">+ Class ${currentBattle.className} planetary defenses</div>`;
+    return rows;
+  }
+
+  function renderBattleTallies() {
+    const b = currentBattle;
+    // Clamp so this is safe to call before round 0 (-1) and after the
+    // last round has already played (== rounds.length).
+    const idx = Math.min(battleRoundIndex, b.rounds.length - 1);
+    const atkCounts = idx < 0 ? b.attackerStart : b.rounds[idx].attackerRemaining;
+    const defCounts = idx < 0 ? b.defenderStart : b.rounds[idx].defenderRemaining;
+    const bonusRemaining = idx < 0
+      ? (b.defenderId ? C.CLASS_DEFENSE_BONUS * b.classId : 0)
+      : (b.rounds[idx].defenderBonusRemaining || 0);
+    el('battleAttackerTally').innerHTML = shipTallyHtml(atkCounts, 0);
+    el('battleDefenderTally').innerHTML = shipTallyHtml(defCounts, bonusRemaining);
+  }
+
+  function appendBattleRoundLog(round, index) {
+    const b = currentBattle;
+    const atkLost = SC.Engine.fleetShipTotal(round.attackerLosses);
+    const defLost = 'neutral' in round.defenderLosses ? round.defenderLosses.neutral : SC.Engine.fleetShipTotal(round.defenderLosses);
+    const line = document.createElement('div');
+    line.className = 'log-entry battle-round';
+    line.innerHTML = `<div class="t">Round ${index + 1}</div>
+      ${escapeHtml(b.attackerName)} strikes for ${Math.round(round.attackerPowerRolled)} —
+      <span class="losses">${defLost > 0 ? `${defLost} lost` : 'no losses'}</span>.
+      ${escapeHtml(b.defenderName)} returns ${Math.round(round.defenderPowerRolled)} —
+      <span class="losses">${atkLost > 0 ? `${atkLost} lost` : 'no losses'}</span>.`;
+    el('battleLog').appendChild(line);
+    el('battleLog').scrollTop = el('battleLog').scrollHeight;
+  }
+
+  function showNextBattle() {
+    if (battleQueue.length === 0) {
+      if (state.status !== 'active') showEndModal();
+      return;
+    }
+    currentBattle = battleQueue.shift();
+    battleRoundIndex = -1;
+    el('battleLog').innerHTML = '';
+    el('battleResult').classList.add('hidden');
+    el('battleSkipBtn').hidden = false;
+    el('battleContinueBtn').hidden = true;
+
+    el('battlePlanetName').textContent = `${currentBattle.planetName} · Class ${currentBattle.className}`;
+    el('battleAttackerName').textContent = currentBattle.attackerName;
+    el('battleAttackerName').style.color = currentBattle.attackerColor;
+    el('battleDefenderName').textContent = currentBattle.defenderName;
+    el('battleDefenderName').style.color = currentBattle.defenderColor;
+
+    renderBattleTallies();
+    el('battle-modal').classList.remove('hidden');
+    battleTimer = setTimeout(advanceBattleRound, 500);
+  }
+
+  function advanceBattleRound() {
+    clearTimeout(battleTimer);
+    battleRoundIndex++;
+    if (battleRoundIndex >= currentBattle.rounds.length) {
+      finishBattleDisplay();
+      return;
+    }
+    appendBattleRoundLog(currentBattle.rounds[battleRoundIndex], battleRoundIndex);
+    renderBattleTallies();
+    battleTimer = setTimeout(advanceBattleRound, 750);
+  }
+
+  function skipBattle() {
+    if (el('battleSkipBtn').hidden) return; // already finished (e.g. auto-advance beat the click)
+    clearTimeout(battleTimer);
+    while (battleRoundIndex < currentBattle.rounds.length - 1) {
+      battleRoundIndex++;
+      appendBattleRoundLog(currentBattle.rounds[battleRoundIndex], battleRoundIndex);
+    }
+    renderBattleTallies();
+    finishBattleDisplay();
+  }
+
+  function finishBattleDisplay() {
+    clearTimeout(battleTimer);
+    const b = currentBattle;
+    const won = b.attackerWins;
+    const isHumanAttacker = b.attackerId === state.players.find(p => p.isHuman).id;
+    const humanWon = isHumanAttacker ? won : !won;
+
+    const resultEl = el('battleResult');
+    resultEl.classList.remove('hidden', 'won', 'lost');
+    resultEl.classList.add(humanWon ? 'won' : 'lost');
+    if (isHumanAttacker) {
+      resultEl.textContent = won ? `Victory! ${b.planetName} is yours.` : `Defeat — your fleet was destroyed.`;
+    } else {
+      resultEl.textContent = won ? `Defeat — ${b.planetName} has fallen.` : `Victory! You repelled the attack.`;
+    }
+    if (b.wasHome) resultEl.textContent += won ? ` ${b.defenderName} is eliminated!` : '';
+
+    el('battleSkipBtn').hidden = true;
+    el('battleContinueBtn').hidden = false;
+  }
+
+  function closeBattleModal() {
+    clearTimeout(battleTimer);
+    el('battle-modal').classList.add('hidden');
+    if (battleQueue.length > 0) {
+      showNextBattle();
+    } else {
+      toast(`Turn ${state.turn} begins.`);
+      if (state.status !== 'active') showEndModal();
     }
   }
 
@@ -649,6 +782,9 @@
 
     el('logBtn').addEventListener('click', () => { renderLog(); el('log-modal').classList.remove('hidden'); });
     el('logCloseBtn').addEventListener('click', () => el('log-modal').classList.add('hidden'));
+
+    el('battleSkipBtn').addEventListener('click', skipBattle);
+    el('battleContinueBtn').addEventListener('click', closeBattleModal);
 
     el('menuBtn').addEventListener('click', () => el('menu-modal').classList.remove('hidden'));
     el('resumeBtn').addEventListener('click', () => el('menu-modal').classList.add('hidden'));

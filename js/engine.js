@@ -44,6 +44,15 @@ SC.CONST = {
   MOVE_UNIT_DISTANCE: 95,
   CLASS_DEFENSE_BONUS: 2.2, // flat defense per planet class, defenders' home turf advantage
 
+  // Combat plays out over rounds instead of one roll: each round's
+  // damage is a side's usual power formula divided by ROUND_DIVISOR,
+  // so a lopsided fight still ends in round 1 (nothing changes there)
+  // while a close fight naturally drags out several rounds of
+  // attrition. COMBAT_MAX_ROUNDS is a safety valve for near-perfectly
+  // matched fights — see RULES_AND_MATH.txt section 8.
+  ROUND_DIVISOR: 4,
+  COMBAT_MAX_ROUNDS: 8,
+
   // Fog of war: vision radius (world units) projected by the human
   // player's own planets and in-transit fleets. AI opponents act on
   // full ground truth (see js/ai.js) — only the human's map view and
@@ -368,6 +377,13 @@ SC.Engine = {
   },
 
   // ---- combat ----
+  // Plays out over rounds instead of one roll: each round both sides
+  // deal damage from their CURRENT (already-attritted) strength, so a
+  // lopsided fight still ends in round 1 (nothing changes there) while
+  // an even fight naturally drags out several rounds. See
+  // RULES_AND_MATH.txt section 8 for the full writeup. Returns a
+  // structured battle report (or null for a same-owner reinforcement)
+  // so the UI can replay it round by round for the human player.
   resolveArrival(state, fleet) {
     const planet = SC.Engine.planetById(state, fleet.to);
     const attacker = SC.Engine.playerById(state, fleet.owner);
@@ -376,35 +392,105 @@ SC.Engine = {
       // Reinforcing own territory.
       for (const id of C.SHIP_ORDER) planet.stationed[id] = (planet.stationed[id] || 0) + (fleet.counts[id] || 0);
       SC.Engine.addLog(state, `${attacker.name}'s fleet reinforces ${planet.name}.`, 'move');
-      return;
+      return null;
     }
 
-    const attackPower = fleetPowerSum(fleet.counts, 'atk') * (1 + C.TECH_COMBAT_BONUS * attacker.techLevel) * (0.85 + Math.random() * 0.3);
+    const defenderPlayer = planet.owner ? SC.Engine.playerById(state, planet.owner) : null;
+    const isNeutral = !defenderPlayer;
 
-    let defendPower, defenderPlayer = null;
-    if (planet.owner) {
-      defenderPlayer = SC.Engine.playerById(state, planet.owner);
-      defendPower = (fleetPowerSum(planet.stationed, 'def') + C.CLASS_DEFENSE_BONUS * planet.classId)
-        * (1 + C.TECH_COMBAT_BONUS * defenderPlayer.techLevel) * (0.85 + Math.random() * 0.3);
-    } else {
-      defendPower = planet.neutralDefense * (0.85 + Math.random() * 0.3);
+    const atk = { ...fleet.counts };
+    const def = isNeutral ? emptyCounts() : { ...planet.stationed };
+    let neutralHP = isNeutral ? planet.neutralDefense : 0;
+    // Snapshot starting strength for the report, before the round loop
+    // (below) and the final ownership mutation (further down) both
+    // overwrite/reassign these.
+    const attackerStart = { ...atk };
+    const defenderStart = isNeutral ? { neutral: neutralHP } : { ...def };
+    // The planet-class bonus is a fixed installation, not a ship — it
+    // boosts the defender's damage output every round same as before,
+    // but also soaks up a proportional share of incoming damage as an
+    // invisible reserve (tracked here, separate from garrison ship
+    // counts) so a garrison of 0 doesn't instantly fall to any attack;
+    // it decays alongside the garrison instead of defending forever.
+    let defBonusHP = isNeutral ? 0 : C.CLASS_DEFENSE_BONUS * planet.classId;
+
+    const rounds = [];
+    let roundsFought = 0;
+    while (roundsFought < C.COMBAT_MAX_ROUNDS) {
+      const atkAlive = fleetShipTotal(atk) > 0;
+      const defAlive = isNeutral ? neutralHP > 0 : (fleetShipTotal(def) > 0 || defBonusHP > 0.05);
+      if (!atkAlive || !defAlive) break;
+      roundsFought++;
+
+      const atkPowerBase = fleetPowerSum(atk, 'atk') * (1 + C.TECH_COMBAT_BONUS * attacker.techLevel);
+      const defPowerBase = isNeutral
+        ? neutralHP
+        : (fleetPowerSum(def, 'def') + defBonusHP) * (1 + C.TECH_COMBAT_BONUS * defenderPlayer.techLevel);
+
+      const atkDamage = (atkPowerBase / C.ROUND_DIVISOR) * (0.85 + Math.random() * 0.3);
+      const defDamage = (defPowerBase / C.ROUND_DIVISOR) * (0.85 + Math.random() * 0.3);
+
+      const defHP = isNeutral ? neutralHP : fleetPowerSum(def, 'def') + defBonusHP;
+      const atkHP = fleetPowerSum(atk, 'def');
+
+      const defFrac = defHP > 0 ? Math.min(1, atkDamage / defHP) : 1;
+      const atkFrac = atkHP > 0 ? Math.min(1, defDamage / atkHP) : 1;
+
+      const attackerLosses = emptyCounts();
+      const defenderLosses = emptyCounts();
+      for (const id of C.SHIP_ORDER) {
+        const lostAtk = Math.min(atk[id] || 0, Math.round((atk[id] || 0) * atkFrac));
+        attackerLosses[id] = lostAtk;
+        atk[id] = (atk[id] || 0) - lostAtk;
+
+        if (!isNeutral) {
+          const lostDef = Math.min(def[id] || 0, Math.round((def[id] || 0) * defFrac));
+          defenderLosses[id] = lostDef;
+          def[id] = (def[id] || 0) - lostDef;
+        }
+      }
+      let neutralLoss = 0;
+      if (isNeutral) {
+        neutralLoss = Math.min(neutralHP, Math.round(neutralHP * defFrac));
+        neutralHP -= neutralLoss;
+      } else {
+        defBonusHP *= (1 - defFrac);
+      }
+
+      rounds.push({
+        attackerPowerRolled: atkDamage,
+        defenderPowerRolled: defDamage,
+        attackerLosses,
+        defenderLosses: isNeutral ? { neutral: neutralLoss } : defenderLosses,
+        attackerRemaining: { ...atk },
+        defenderRemaining: isNeutral ? { neutral: neutralHP } : { ...def },
+        defenderBonusRemaining: isNeutral ? 0 : Math.round(defBonusHP * 10) / 10,
+      });
     }
 
-    const attackerWins = attackPower > defendPower;
-    const winnerPower = attackerWins ? attackPower : defendPower;
-    const loserPower = attackerWins ? defendPower : attackPower;
-    const lossFraction = Math.max(0, Math.min(0.9, loserPower / Math.max(winnerPower, 1)));
+    const atkLeft = fleetShipTotal(atk);
+    const defLeft = isNeutral ? neutralHP : fleetShipTotal(def) + defBonusHP;
+    let attackerWins;
+    if (atkLeft <= 0 && defLeft <= 0) attackerWins = false; // simultaneous knockout -> defender, matches old tie convention
+    else if (atkLeft <= 0) attackerWins = false;
+    else if (defLeft <= 0) attackerWins = true;
+    else {
+      // Round cap hit with both sides still standing -> decide by
+      // whoever has more relative power left, same comparison the
+      // old single-roll model used for its one and only roll.
+      const atkP = fleetPowerSum(atk, 'atk') * (1 + C.TECH_COMBAT_BONUS * attacker.techLevel);
+      const defP = isNeutral
+        ? neutralHP
+        : (fleetPowerSum(def, 'def') + defBonusHP) * (1 + C.TECH_COMBAT_BONUS * defenderPlayer.techLevel);
+      attackerWins = atkP > defP;
+    }
+
+    const wasHome = planet.isHome && !!defenderPlayer;
+    const prevOwnerId = planet.owner;
 
     if (attackerWins) {
-      const survivors = emptyCounts();
-      for (const id of C.SHIP_ORDER) {
-        const n = fleet.counts[id] || 0;
-        survivors[id] = Math.round(n * (1 - lossFraction));
-      }
-      const wasHome = planet.isHome;
-      const prevOwnerId = planet.owner;
       planet.owner = fleet.owner;
-      planet.stationed = survivors;
+      planet.stationed = { ...atk };
       planet.neutralDefense = 0;
 
       state.stats[attacker.id].planetsCaptured++;
@@ -416,24 +502,39 @@ SC.Engine = {
 
       SC.Engine.addLog(state, `${attacker.name} conquers ${planet.name}${prevOwnerId ? ` from ${defenderPlayer.name}` : ''}!`, 'combat');
 
-      if (wasHome && defenderPlayer) {
+      if (wasHome) {
         defenderPlayer.alive = false;
         SC.Engine.addLog(state, `${defenderPlayer.name}'s home world has fallen — they are eliminated!`, 'combat');
       }
     } else {
       state.stats[attacker.id].battlesLost++;
-      if (planet.owner) {
-        for (const id of C.SHIP_ORDER) {
-          const n = planet.stationed[id] || 0;
-          planet.stationed[id] = Math.round(n * (1 - lossFraction));
-        }
+      if (isNeutral) {
+        planet.neutralDefense = neutralHP;
+        SC.Engine.addLog(state, `${attacker.name}'s fleet is destroyed attacking neutral ${planet.name}.`, 'combat');
+      } else {
+        planet.stationed = { ...def };
         state.stats[defenderPlayer.id].battlesWon++;
         SC.Engine.addLog(state, `${defenderPlayer.name} repels ${attacker.name}'s attack on ${planet.name}.`, 'combat');
-      } else {
-        planet.neutralDefense = Math.max(0, Math.round(planet.neutralDefense * (1 - lossFraction)));
-        SC.Engine.addLog(state, `${attacker.name}'s fleet is destroyed attacking neutral ${planet.name}.`, 'combat');
       }
     }
+
+    return {
+      planetId: planet.id,
+      planetName: planet.name,
+      classId: planet.classId,
+      className: planet.className,
+      attackerId: attacker.id,
+      attackerName: attacker.name,
+      attackerColor: attacker.color,
+      defenderId: defenderPlayer ? defenderPlayer.id : null,
+      defenderName: defenderPlayer ? defenderPlayer.name : 'Neutral Defense',
+      defenderColor: defenderPlayer ? defenderPlayer.color : '#5b6285',
+      attackerWins,
+      wasHome,
+      attackerStart,
+      defenderStart,
+      rounds,
+    };
   },
 
   productionTick(state) {
@@ -457,7 +558,7 @@ SC.Engine = {
   },
 
   endTurn(state) {
-    if (state.status !== 'active') return;
+    if (state.status !== 'active') return { battles: [] };
 
     for (const player of state.players) {
       if (!player.isHuman && player.alive) SC.AI.takeTurn(state, player);
@@ -467,16 +568,22 @@ SC.Engine = {
 
     SC.Engine.productionTick(state);
 
+    const battles = [];
     const arriving = state.fleets.filter(f => f.arrivalTurn <= state.turn);
     state.fleets = state.fleets.filter(f => f.arrivalTurn > state.turn);
     for (const fleet of arriving) {
       const owner = SC.Engine.playerById(state, fleet.owner);
-      if (owner && owner.alive) SC.Engine.resolveArrival(state, fleet);
+      if (owner && owner.alive) {
+        const report = SC.Engine.resolveArrival(state, fleet);
+        if (report) battles.push(report);
+      }
     }
 
     SC.Engine.refreshVision(state);
     SC.Engine.updatePeakStats(state);
 
     SC.Engine.checkGameOver(state);
+
+    return { battles };
   },
 };
