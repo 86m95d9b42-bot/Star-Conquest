@@ -27,8 +27,14 @@
   // alone.
   const FRAME_ASPECT = 9 / 18;
   function fitStage() {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    // Read the small (toolbars-always-visible) viewport via #vh-probe
+    // rather than window.innerWidth/innerHeight — those change as a
+    // mobile browser's address bar collapses on scroll/tap, which would
+    // otherwise resize the whole #app frame and visibly reflow every
+    // element on an ordinary tap.
+    const probe = el('vh-probe');
+    const vw = probe ? probe.clientWidth : window.innerWidth;
+    const vh = probe ? probe.clientHeight : window.innerHeight;
     let w, h;
     if (vw / vh > FRAME_ASPECT) {
       h = vh;
@@ -639,8 +645,7 @@
   function initChrome() {
     el('endTurnBtn').addEventListener('click', doEndTurn);
 
-    el('planet-panel').querySelector('.sheet-handle').addEventListener('click', hidePlanetPanel);
-    el('sheet-backdrop').addEventListener('click', hidePlanetPanel);
+    el('planetCloseBtn').addEventListener('click', hidePlanetPanel);
 
     el('logBtn').addEventListener('click', () => { renderLog(); el('log-modal').classList.remove('hidden'); });
     el('logCloseBtn').addEventListener('click', () => el('log-modal').classList.add('hidden'));

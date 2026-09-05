@@ -18,6 +18,8 @@
 </head>
 <body>
 
+<div id="vh-probe" aria-hidden="true"></div>
+
 <div id="rotate-overlay" aria-hidden="true">
   <div class="rotate-icon">📱</div>
   <p>Star Conquest is a portrait-only game.<br>Please rotate your device back.</p>
@@ -73,8 +75,6 @@
         <button type="submit" class="btn-primary" id="launchBtn">Launch Campaign</button>
         <button type="button" class="btn-secondary" id="continueBtn" hidden>Continue Saved Game</button>
       </form>
-
-      <button type="button" class="btn-secondary" id="statsBtn">📊 Campaign Stats</button>
      </div>
   </section>
 
@@ -116,8 +116,10 @@
   <!-- PLANET PANEL -->
   <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
   <div id="planet-panel" class="sheet hidden">
-    <div class="sheet-handle"></div>
     <div class="sheet-body" id="planetPanelBody"></div>
+    <div class="sheet-footer">
+      <button class="btn-primary" id="planetCloseBtn">Close</button>
+    </div>
   </div>
 
   <!-- SEND FLEET MODAL -->
@@ -178,6 +180,7 @@
       <p id="endBody"></p>
       <div class="section-title">Your Empire</div>
       <div id="endStats" class="stat-grid"></div>
+      <button class="btn-secondary" id="statsBtn">📊 Campaign Stats</button>
       <button class="btn-primary" id="endRestartBtn">New Campaign</button>
     </div>
   </div>
