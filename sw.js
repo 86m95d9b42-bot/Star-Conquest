@@ -1,4 +1,4 @@
-const CACHE_NAME = 'star-conquest-v1';
+const CACHE_NAME = 'star-conquest-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -17,8 +17,12 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  // Deliberately no self.skipWaiting() here — an updated worker installs
+  // and then sits in "waiting" until the page asks it to take over (see
+  // the message listener below), so the update can be surfaced to the
+  // player as a button press instead of silently swapping under them.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
   );
 });
 
@@ -28,6 +32,10 @@ self.addEventListener('activate', (event) => {
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (event) => {

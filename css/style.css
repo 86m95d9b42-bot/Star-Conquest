@@ -107,6 +107,15 @@ p{ margin:0; }
 .title-block h1 span{ display:block; color:var(--accent); font-size:26px; letter-spacing:6px; }
 .tagline{ color:var(--text-dim); margin-top:8px; font-size:14px; letter-spacing:.5px; }
 
+.update-banner{
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 12px;
+  background:var(--panel2); border:1px solid var(--accent); border-radius:14px;
+  padding:12px 14px;
+}
+.update-banner.hidden{ display:none; }
+.update-banner span{ font-size:13px; color:var(--text); flex:1 1 160px; }
+.update-banner button{ flex:none; width:auto; margin-top:0; padding:8px 14px; font-size:13px; }
+
 #setup-form{ display:flex; flex-direction:column; gap:24px; }
 #setup-form .btn-secondary{ margin-top:0; } /* spacing now comes from the form's own gap, not this */
 #statsBtn{ margin-top:0; } /* sits in .start-scroll's own gap, same reason */

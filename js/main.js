@@ -708,8 +708,32 @@
     });
 
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      let pendingUpdate = null;
+      const showUpdateBanner = (reg) => { pendingUpdate = reg; el('update-banner').classList.remove('hidden'); };
+
+      el('updateNowBtn').addEventListener('click', () => {
+        if (pendingUpdate && pendingUpdate.waiting) pendingUpdate.waiting.postMessage({ type: 'SKIP_WAITING' });
+        el('update-banner').classList.add('hidden');
+      });
+
+      let reloadedForUpdate = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloadedForUpdate) return;
+        reloadedForUpdate = true;
+        window.location.reload();
+      });
+
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(() => { /* offline support best-effort */ });
+        navigator.serviceWorker.register('sw.js').then((reg) => {
+          if (reg.waiting) showUpdateBanner(reg);
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner(reg);
+            });
+          });
+        }).catch(() => { /* offline support best-effort */ });
       });
     }
 
